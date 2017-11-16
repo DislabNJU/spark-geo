@@ -195,7 +195,7 @@ private[spark] class Client(
   }
 
   private def newRemoteSAM(): Unit = {
-    var appId: ApplicationId = null
+
     try {
       // launcherBackend.connect() //????
       // Setup the credentials before doing anything else,
@@ -205,6 +205,9 @@ private[spark] class Client(
       var a = 0
       val yarnTag: String = null
       for( a <- 1 to numYarn) {
+
+        var appId: ApplicationId = null
+
         val yarnTag = yarnIpStringPreTag.concat(a.toString)
         logInfo( "Value of yarnTag: " + yarnTag)
         // println( "Value of yarnTag: " + yarnTag)
@@ -230,12 +233,12 @@ private[spark] class Client(
         val newApp = myYarnClient.createApplication()
         val newAppResponse = newApp.getNewApplicationResponse()
         appId = newAppResponse.getApplicationId()
-        reportLauncherState(SparkAppHandle.State.SUBMITTED)
+        // reportLauncherState(SparkAppHandle.State.SUBMITTED)
 
         // launcherBackend.setAppId(appId.toString)
 
         // Verify whether the cluster has enough resources for our AM
-        verifyClusterResources(newAppResponse)
+        // verifyClusterResources(newAppResponse)
 
         // Set up the appropriate contexts to launch our AM
         val containerContext = createContainerLaunchContext(myYarnConf, newAppResponse)
@@ -246,6 +249,7 @@ private[spark] class Client(
         myYarnClient.submitApplication(appContext)
         remoteYarnClients(a-1) = myYarnClient
         remoteYarnAppId(a-1) = appId
+
       }
 
     } catch {

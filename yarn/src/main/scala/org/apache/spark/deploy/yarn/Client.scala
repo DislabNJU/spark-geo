@@ -71,8 +71,8 @@ private[spark] class Client(
 
 
 
-  private val numYarnStringTag: String = "NumYarnTag"
-  private val yarnIpStringPreTag: String = "yarnTag"
+  private val numYarnStringTag: String = "spark.remote.NumYarnTag"
+  private val yarnIpStringPreTag: String = "spark.remote.YarnTag"
   private var numYarn = sparkConf.get(numYarnStringTag).toInt
   private var remoteYarnClients: Array[YarnClient] = new Array[YarnClient](numYarn)
   private var remoteYarnAppId: Array[ApplicationId] = new Array[ApplicationId](numYarn)

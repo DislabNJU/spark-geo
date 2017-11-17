@@ -326,10 +326,12 @@ override def getPreferredLocations(split: Partition): Seq[String] = {
     }
 
     logInfo(s" RDD name: ${this.name}")
-    val preidx = this.name.indexOf(":")
-    val hdfsName = this.name.substring(0, preidx + 3)
-    if (!hdfsName.equals("hdfs://")) {
-      val locsRemote: Option[Seq[String]] = locs.map(ol => ol.map(l => hdfsName + l))
+    var sub: Array[String] = this.name.split(":")
+    val tempName = sub(1)
+    val tempNameNode = tempName.replaceAll("//" , "")
+    val myNameNode: String = sc.getConf.get("spark.local.namenode")
+    if (!tempNameNode.equals(myNameNode)) {
+      val locsRemote: Option[Seq[String]] = locs.map(ol => ol.map(l => "*"))
       logInfo(s" locsRemote: ${locsRemote.toString}")
       locsRemote.getOrElse(hsplit.getLocations.filter(_ != "localhost"))
     } else {

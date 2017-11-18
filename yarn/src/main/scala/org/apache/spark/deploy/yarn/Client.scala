@@ -73,6 +73,8 @@ private[spark] class Client(
 
   private val numYarnStringTag: String = "spark.remote.NumYarnTag"
   private val yarnIpStringPreTag: String = "spark.remote.YarnTag"
+  private val nameIpStringPreTag: String = "spark.remote.NameTag"
+
   private var numYarn = sparkConf.get(numYarnStringTag).toInt
   private var remoteYarnClients: Array[YarnClient] = new Array[YarnClient](numYarn)
   private var remoteYarnAppId: Array[ApplicationId] = new Array[ApplicationId](numYarn)
@@ -157,6 +159,12 @@ private[spark] class Client(
       // Setup the credentials before doing anything else,
       // so we have don't have issues at any point.
       setupCredentials()
+
+      val yarnIp: String = sparkConf.get("spark.local.yarnnode")
+      yarnConf.set("yarn.resourcemanager.hostname", yarnIp )
+      yarnConf.set("yarn.resourcemanager.address", yarnIp + ":8032")
+      yarnConf.set("yarn.resourcemanager.scheduler.address", yarnIp + ":8030")
+
       yarnClient.init(yarnConf)
       yarnClient.start()
 
@@ -173,8 +181,11 @@ private[spark] class Client(
       // Verify whether the cluster has enough resources for our AM
       verifyClusterResources(newAppResponse)
 
+      val localNameIp: String = sparkConf.get("spark.local.namenode")
+      logInfo("localNameIp " + localNameIp)
+
       // Set up the appropriate contexts to launch our AM
-      val containerContext = createContainerLaunchContext(yarnConf, newAppResponse)
+      val containerContext = createContainerLaunchContext(localNameIp,yarnConf, newAppResponse)
       val appContext = createApplicationSubmissionContext(newApp, containerContext)
 
       // Finally, submit and monitor the application
@@ -207,12 +218,15 @@ private[spark] class Client(
       for( a <- 1 to numYarn) {
 
         var appId: ApplicationId = null
+        //import org.apache.spark.deploy.yarn.YarnClientCommon
 
         val yarnTag = yarnIpStringPreTag.concat(a.toString)
-        logInfo( "Value of yarnTag: " + yarnTag)
-        // println( "Value of yarnTag: " + yarnTag)
-
         val yarnIp: String = sparkConf.get(yarnTag)
+        logInfo( "Value of yarnTag: " + yarnTag + ": "+ yarnIp)
+
+        val nameTag = nameIpStringPreTag.concat(a.toString)
+        val nameIp: String = sparkConf.get(nameTag)
+        logInfo( "Value of yarnTag: " + yarnTag+": "+nameIp)
 
         val myYarnConf = new YarnConfiguration()
 
@@ -241,7 +255,7 @@ private[spark] class Client(
         // verifyClusterResources(newAppResponse)
 
         // Set up the appropriate contexts to launch our AM
-        val containerContext = createContainerLaunchContext(myYarnConf, newAppResponse)
+        val containerContext = createContainerLaunchContext(nameIp, myYarnConf, newAppResponse)
         val appContext = createApplicationSubmissionContext(newApp, containerContext)
 
         // Finally, submit and monitor the application
@@ -912,7 +926,9 @@ private[spark] class Client(
     * Set up a ContainerLaunchContext to launch our ApplicationMaster container.
     * This sets up the launch environment, java options, and the command for launching the AM.
     */
-  private def createContainerLaunchContext(myYarnConf: Configuration,
+  private def createContainerLaunchContext(
+                                          nameNodeHost: String,
+                                            myYarnConf: Configuration,
                                            newAppResponse: GetNewApplicationResponse)
   : ContainerLaunchContext = {
     logInfo("Setting up container launch context for our AM")
@@ -1033,17 +1049,35 @@ private[spark] class Client(
       } else {
         Utils.classForName("org.apache.spark.deploy.yarn.ExecutorLauncher").getName
       }
+
+
+    //
+    //add am correct host
+    //
+    val rmHost =
+      Seq("--rmhost", myYarnConf.get("yarn.resourcemanager.hostname"))
+
+
+    //add namenode host
+
+    val nmHost =
+      Seq("--nmhost", nameNodeHost)
+
+
     if (args.primaryRFile != null && args.primaryRFile.endsWith(".R")) {
       args.userArgs = ArrayBuffer(args.primaryRFile) ++ args.userArgs
     }
     val userArgs = args.userArgs.flatMap { arg =>
       Seq("--arg", YarnSparkHadoopUtil.escapeForShell(arg))
     }
+
+
+    //add am correct host
     val amArgs =
       Seq(amClass) ++ userClass ++ userJar ++ primaryPyFile ++ primaryRFile ++
         userArgs ++ Seq(
         "--properties-file", buildPath(YarnSparkHadoopUtil.expandEnvironment(Environment.PWD),
-          LOCALIZED_CONF_DIR, SPARK_CONF_FILE))
+          LOCALIZED_CONF_DIR, SPARK_CONF_FILE)) ++ rmHost ++ nmHost
 
     // Command for the ApplicationMaster
     val commands = prefixEnv ++ Seq(

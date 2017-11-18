@@ -139,6 +139,11 @@ class HadoopRDD[K, V](
 
   private val shouldCloneJobConf = sparkContext.conf.getBoolean("spark.hadoop.cloneConf", false)
 
+  val myNameNode: String = sc.getConf.get("spark.local.namenode1")
+
+  logInfo(" init conf4 myNameNode1: "+ myNameNode)
+
+
   // Returns a JobConf that will be used on slaves to obtain input splits for Hadoop reads.
   protected def getJobConf(): JobConf = {
     val conf: Configuration = broadcastedConf.value.value
@@ -310,7 +315,24 @@ class HadoopRDD[K, V](
   }
 
 override def getPreferredLocations(split: Partition): Seq[String] = {
-    val hsplit = split.asInstanceOf[HadoopPartition].inputSplit.value
+
+
+  //remote null
+  logInfo(s" RDD name: ${this.name}")
+  val sub: Array[String] = this.name.split(":")
+  val tempName = sub(1)
+  val tempNameNode = tempName.replaceAll("//" , "")
+  if (!tempNameNode.equals(myNameNode)) {
+    /*
+    val locsRemote: Option[Seq[String]] = locs.map(ol => ol.map(l => "*"))
+    logInfo(s" locsRemote: ${locsRemote.toString}")
+    locsRemote.getOrElse(hsplit.getLocations.filter(_ != "localhost"))*/
+    return Nil
+  }
+
+
+
+  val hsplit = split.asInstanceOf[HadoopPartition].inputSplit.value
     val locs: Option[Seq[String]] = HadoopRDD.SPLIT_INFO_REFLECTIONS match {
       case Some(c) =>
         try {
@@ -325,19 +347,10 @@ override def getPreferredLocations(split: Partition): Seq[String] = {
       case None => None
     }
 
-    logInfo(s" RDD name: ${this.name}")
-    var sub: Array[String] = this.name.split(":")
-    val tempName = sub(1)
-    val tempNameNode = tempName.replaceAll("//" , "")
-    val myNameNode: String = sc.getConf.get("spark.local.namenode")
-    if (!tempNameNode.equals(myNameNode)) {
-      val locsRemote: Option[Seq[String]] = locs.map(ol => ol.map(l => "*"))
-      logInfo(s" locsRemote: ${locsRemote.toString}")
-      locsRemote.getOrElse(hsplit.getLocations.filter(_ != "localhost"))
-    } else {
-      logInfo(s" locs: ${locs.toString}")
-      locs.getOrElse(hsplit.getLocations.filter(_ != "localhost"))
-    }
+
+  logInfo(s" locs: ${locs.toString}")
+  locs.getOrElse(hsplit.getLocations.filter(_ != "localhost"))
+
 }
 
   override def checkpoint() {

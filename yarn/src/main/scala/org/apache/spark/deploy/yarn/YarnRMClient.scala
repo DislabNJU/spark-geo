@@ -65,6 +65,11 @@ private[spark] class YarnRMClient extends Logging {
       localResources: Map[String, LocalResource]
     ): YarnAllocator = {
     amClient = AMRMClient.createAMRMClient()
+
+    logInfo("YarnRMClient yarn ip: "+conf.get("yarn.resourcemanager.host"))
+
+    val yarnConf2: YarnConfiguration = new YarnConfiguration
+
     amClient.init(conf)
     amClient.start()
     this.uiHistoryAddress = uiHistoryAddress

@@ -29,6 +29,9 @@ class ApplicationMasterArguments(val args: Array[String]) {
   var userArgs: Seq[String] = Nil
   var propertiesFile: String = null
 
+  //add amhost
+  var amhost: String = null
+  var nmhost: String = null
   parseArgs(args.toList)
 
   private def parseArgs(inputArgs: List[String]): Unit = {
@@ -62,6 +65,14 @@ class ApplicationMasterArguments(val args: Array[String]) {
 
         case ("--properties-file") :: value :: tail =>
           propertiesFile = value
+          args = tail
+
+        case ("--rmhost") :: value :: tail =>
+          amhost = value
+          args = tail
+
+        case ("--nmhost") :: value :: tail =>
+          nmhost = value
           args = tail
 
         case _ =>

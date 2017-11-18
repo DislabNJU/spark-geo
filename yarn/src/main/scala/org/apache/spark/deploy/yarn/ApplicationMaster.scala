@@ -53,10 +53,16 @@ private[spark] class ApplicationMaster(
   // TODO: Currently, task to container is computed once (TaskSetManager) - which need not be
   // optimal as more containers are available. Might need to handle this better.
 
-  private val sparkConf = new SparkConf()
-  private val yarnConf: YarnConfiguration = SparkHadoopUtil.get.newConfiguration(sparkConf)
+
+  private val amHost: String = args.amhost
+  logInfo("init conf 1, amhost: " +amHost)
+  private var sparkConf = new SparkConf()
+
+  private var yarnConf: YarnConfiguration = SparkHadoopUtil.get.newConfiguration(sparkConf)
     .asInstanceOf[YarnConfiguration]
+
   private val isClusterMode = args.userClass != null
+
 
   // Default to twice the number of executors (twice the maximum number of executors if dynamic
   // allocation is enabled), with a minimum of 3.
@@ -182,6 +188,18 @@ private[spark] class ApplicationMaster(
   final def run(): Int = {
     try {
       val appAttemptId = client.getAttemptId()
+
+      logInfo("init conf 3")
+
+      logInfo("yarn.resourcemanager.address: "+yarnConf.get("yarn.resourcemanager.address"))
+
+
+      yarnConf.set("yarn.resourcemanager.hostname", amHost )
+      yarnConf.set("yarn.resourcemanager.address", amHost + ":8032")
+      yarnConf.set("yarn.resourcemanager.scheduler.address", amHost + ":8030")
+
+      logInfo("yarn.resourcemanager.address: "+yarnConf.get("yarn.resourcemanager.address"))
+
 
       if (isClusterMode) {
         // Set the web ui port to be ephemeral for yarn so we don't conflict with
@@ -339,6 +357,9 @@ private[spark] class ApplicationMaster(
       _sparkConf.get("spark.driver.host"),
       _sparkConf.get("spark.driver.port").toInt,
       CoarseGrainedSchedulerBackend.ENDPOINT_NAME).toString
+    //import org.apache.hadoop.conf.Configuration
+    //import org.apache.hadoop.yarn.conf.YarnConfiguration
+
     allocator = client.register(driverUrl,
       driverRef,
       yarnConf,
@@ -734,10 +755,14 @@ object ApplicationMaster extends Logging {
   def main(args: Array[String]): Unit = {
     SignalUtils.registerLogger(log)
     val amArgs = new ApplicationMasterArguments(args)
+    logInfo("init conf 2, amhost " + amArgs.amhost )
+    logInfo("init conf 2, nmhost " + amArgs.nmhost )
 
     // Load the properties file with the Spark configuration and set entries as system properties,
     // so that user code run inside the AM also has access to them.
     // Note: we must do this before SparkHadoopUtil instantiated
+    sys.props("spark.local.namenode1") = amArgs.nmhost
+
     if (amArgs.propertiesFile != null) {
       Utils.getPropertiesFromFile(amArgs.propertiesFile).foreach { case (k, v) =>
         sys.props(k) = v

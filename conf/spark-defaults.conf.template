@@ -25,5 +25,9 @@
 # spark.serializer                 org.apache.spark.serializer.KryoSerializer
 # spark.driver.memory              5g
 # spark.executor.extraJavaOptions  -XX:+PrintGCDetails -Dkey=value -Dnumbers="one two three"
+
+# spark.local.yarnnode slave-0-10
+# spark.local.namenode slave-0-10
 # spark.remote.NumYarnTag 1
 # spark.remote.YarnTag1 172.25.42.104
+# spark.remote.NameTag1 172.25.42.104

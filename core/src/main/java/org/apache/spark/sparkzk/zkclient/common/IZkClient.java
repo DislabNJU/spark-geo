@@ -17,7 +17,7 @@
 
 package org.apache.spark.sparkzk.zkclient.common;
 
-import zkclient.common.exception.*;
+import org.apache.spark.sparkzk.zkclient.common.exception.*;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.Watcher.Event.KeeperState;
@@ -31,7 +31,6 @@ import java.util.concurrent.TimeUnit;
 /**
  * zookeeper client wrapper
  *
- * @author adyliu (imxylz@gmail.com)
  * @since 2.0
  */
 public interface IZkClient extends Closeable {
@@ -137,7 +136,7 @@ public interface IZkClient extends Closeable {
     /**
      * Create a persistent node with empty data (null)
      * <p>
-     * If the createParents is true, neither {@link ZkNodeExistsException} nor {@link zkclient.common.exception} were throwed.
+     * If the createParents is true, neither {@link ZkNodeExistsException} nor {@link org.apache.spark.sparkzk.zkclient.common.exception} were throwed.
      * </p>
      *
      * @param path          the path for the node
@@ -233,7 +232,7 @@ public interface IZkClient extends Closeable {
      *
      * @param path the path for the node
      * @return the data for the node
-     * @throws zkclient.common.exception.ZkNoNodeException if the node not exists
+     * @throws org.apache.spark.sparkzk.zkclient.common.exception.ZkNoNodeException if the node not exists
      * @see #readData(String, boolean)
      */
     byte[] readData(String path);
@@ -242,7 +241,7 @@ public interface IZkClient extends Closeable {
      * read the data for the node
      *
      * @param path                      the path for the node
-     * @param returnNullIfPathNotExists if true no {@link zkclient.common.exception.ZkNoNodeException} thrown
+     * @param returnNullIfPathNotExists if true no {@link org.apache.spark.sparkzk.zkclient.common.exception.ZkNoNodeException} thrown
      * @return the data for the node
      */
     byte[] readData(String path, boolean returnNullIfPathNotExists);
@@ -382,7 +381,7 @@ public interface IZkClient extends Closeable {
      * @param data            the data for the node
      * @param expectedVersion the version for the node
      * @return the stat for the node
-     * @see #cas(String, zkclient.common.IZkClient.DataUpdater)
+     * @see #cas(String, org.apache.spark.sparkzk.zkclient.common.IZkClient.DataUpdater)
      */
     Stat writeData(String path, byte[] data, int expectedVersion);
 

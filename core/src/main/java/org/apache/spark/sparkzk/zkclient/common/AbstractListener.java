@@ -9,8 +9,7 @@ import java.util.List;
 
 /**
  * An abstract class for zookeeper listner
- * @author adyliu (imxylz@gmail.com)
- * @since 2012-12-4
+ 
  * @see IZkChildListener
  * @see IZkDataListener
  * @see IZkStateListener

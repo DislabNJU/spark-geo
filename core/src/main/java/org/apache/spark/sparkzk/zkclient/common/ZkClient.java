@@ -16,7 +16,7 @@
 package org.apache.spark.sparkzk.zkclient.common;
 
 import org.apache.spark.sparkzk.zkclient.common.ZkEventThread.ZkEvent;
-import zkclient.common.exception.*;
+import org.apache.spark.sparkzk.zkclient.common.exception.*;
 
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.KeeperException.ConnectionLossException;

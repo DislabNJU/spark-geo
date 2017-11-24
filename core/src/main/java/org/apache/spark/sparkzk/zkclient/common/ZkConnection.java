@@ -15,7 +15,7 @@
  */
 package org.apache.spark.sparkzk.zkclient.common;
 
-import zkclient.common.exception.*;
+import org.apache.spark.sparkzk.zkclient.common.exception.*;
 
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;

@@ -1,6 +1,6 @@
 package org.apache.spark.deploy.yarn
 
-class YarnClientCommon {
+class YarnClientCommonTag {
 
   val localYarnTag: String = "huehofhoiho"
 

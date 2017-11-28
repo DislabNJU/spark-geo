@@ -24,7 +24,7 @@ import org.apache.spark.internal.Logging
  */
 class DAGSchedulerZKClient(dagScheduler: DAGScheduler) extends Logging{
 
-  def register(): Unit = {
+  def register(id: Int): Unit = {
 
   }
 

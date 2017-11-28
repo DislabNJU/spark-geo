@@ -12,9 +12,6 @@ import java.net.InetSocketAddress;
 
 /**
  * Adapter for zookeeper 3.3.x/3.4.x
- *
- * @author adyliu (imxylz@gmail.com)
- * @since 2012-11-27
  */
 public class ServerCnxnFactory {
 

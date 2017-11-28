@@ -763,6 +763,10 @@ object ApplicationMaster extends Logging {
     // Note: we must do this before SparkHadoopUtil instantiated
     sys.props("spark.local.namenode1") = amArgs.nmhost
 
+    sys.props("spark.remote.appname") = amArgs.appname
+
+    sys.props("spark.remote.allamnum") = amArgs.allamnum
+
     if (amArgs.propertiesFile != null) {
       Utils.getPropertiesFromFile(amArgs.propertiesFile).foreach { case (k, v) =>
         sys.props(k) = v

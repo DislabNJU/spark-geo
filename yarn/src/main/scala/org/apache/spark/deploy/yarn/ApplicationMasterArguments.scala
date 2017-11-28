@@ -32,6 +32,10 @@ class ApplicationMasterArguments(val args: Array[String]) {
   //add amhost
   var amhost: String = null
   var nmhost: String = null
+  var appname: String  = null
+
+  var allamnum: String = null
+
   parseArgs(args.toList)
 
   private def parseArgs(inputArgs: List[String]): Unit = {
@@ -73,6 +77,14 @@ class ApplicationMasterArguments(val args: Array[String]) {
 
         case ("--nmhost") :: value :: tail =>
           nmhost = value
+          args = tail
+
+        case ("--appname") :: value :: tail =>
+          appname = value
+          args = tail
+
+        case ("--allamnum") :: value :: tail =>
+          allamnum = value
           args = tail
 
         case _ =>

@@ -17,9 +17,12 @@
 
 package org.apache.spark.scheduler
 
+import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.AccumulatorV2
+
+import scala.collection.mutable.{HashMap, HashSet}
 
 /**
  * Low-level task scheduler interface, currently implemented exclusively by
@@ -50,6 +53,9 @@ private[spark] trait TaskScheduler {
 
   // Submit a sequence of tasks to run.
   def submitTasks(taskSet: TaskSet): Unit
+
+  // Submit a sequence of Additional tasks to current stage.
+  def submitTasksAdditional(taskSetName: String, taskSet: TaskSet): Unit
 
   // Cancel a stage.
   def cancelTasks(stageId: Int, interruptThread: Boolean): Unit
@@ -89,4 +95,17 @@ private[spark] trait TaskScheduler {
    */
   def applicationAttemptId(): Option[String]
 
+  // add by lxb
+  def registerAsFollower(followerId: Int, leaderEndpointRef: RpcEndpointRef): Boolean
+
+  def sendRemoteEventsToFollowers(epoch: Long,
+                                  events: HashMap[Int, HashSet[CompletionEvent]],
+                                  allEventsIds: HashSet[Int]): Unit
+
+  def sendRemoteEventsToLeader(followerId: Int,
+                               epoch: Long,
+                               events: HashSet[CompletionEvent],
+                               ask: HashSet[Int]): Unit
+
+  def getRecoverInfoFromLeader(followerId: Int): RecoverInfo
 }

@@ -24,14 +24,15 @@ import javax.annotation.concurrent.GuardedBy
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
 import scala.concurrent.Future
 import scala.concurrent.duration.Duration
-
 import org.apache.spark.{ExecutorAllocationClient, SparkEnv, SparkException, TaskState}
 import org.apache.spark.internal.Logging
-import org.apache.spark.rpc._
+import org.apache.spark.rpc.{RpcEndpointRef, _}
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.scheduler.cluster.CoarseGrainedSchedulerBackend.ENDPOINT_NAME
 import org.apache.spark.util.{RpcUtils, SerializableBuffer, ThreadUtils, Utils}
+
+import scala.util.{Failure, Success}
 
 /**
  * A scheduler backend that waits for coarse-grained executors to connect.
@@ -92,6 +93,11 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   // The num of current max ExecutorId used to re-register appMaster
   @volatile protected var currentExecutorIdCounter = 0
 
+  // each followers' DriverBackendPoint
+  private val followerIdToEndpoint = new HashMap[Int, RpcEndpointRef]
+
+  private var leaderEndpoint: RpcEndpointRef = null
+
   class DriverEndpoint(override val rpcEnv: RpcEnv, sparkProperties: Seq[(String, String)])
     extends ThreadSafeRpcEndpoint with Logging {
 
@@ -145,6 +151,12 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
             // Ignoring the task kill since the executor is not registered.
             logWarning(s"Attempted to kill task $taskId for unknown executor $executorId.")
         }
+
+      case RemoteCompletionEventsFromLeader(epoch, events, allEventsIds) =>
+        scheduler.handleRemoteEventsFromLeader(epoch, events, allEventsIds)
+
+      case RemoteCompletionEventsFromFollower(followerId, epoch, event, ask) =>
+        scheduler.handleRemoteEventsFromFollower(followerId, epoch, event, ask)
     }
 
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
@@ -208,6 +220,13 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
       case RetrieveSparkProps =>
         context.reply(sparkProperties)
+
+      case RegisterAsFollower(followerId, followerEndpoint) =>
+        followerIdToEndpoint.put(followerId, followerEndpoint)
+        context.reply(true)
+
+      case RecoverApplication(followerId) =>
+        context.reply(scheduler.handleRecoverApplication(followerId))
     }
 
     // Make fake resource offers on all executors
@@ -347,6 +366,8 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
     // TODO (prashant) send conf instead of properties
     driverEndpoint = createDriverEndpointRef(properties)
+
+    scheduler.onSchedulerBackendStarted(driverEndpoint)
   }
 
   protected def createDriverEndpointRef(
@@ -368,6 +389,43 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       case e: Exception =>
         throw new SparkException("Error asking standalone scheduler to shut down executors", e)
     }
+  }
+
+  def registerAsFollower(followerId: Int, leaderEndpointRef: RpcEndpointRef): Boolean = {
+    var isSuccess = false
+    leaderEndpoint = leaderEndpointRef
+    driverEndpoint.ask(RegisterAsFollower(followerId, driverEndpoint)).onComplete {
+      case Success(msg) =>
+        logInfo("registerAsFollower success")
+        isSuccess = true
+      case Failure(e) =>
+        logInfo("registerAsFollower failed")
+    }
+    isSuccess
+  }
+
+  def getLeaderEndpoint(followerId: Int): RpcEndpointRef = {
+    leaderEndpoint
+  }
+
+  def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = {
+    getLeaderEndpoint(followerId).askWithRetry[RecoverInfo](RecoverApplication(followerId))
+  }
+
+  def sendRemoteEventsToFollowers(epoch: Long,
+                                  events: HashMap[Int, HashSet[CompletionEvent]],
+                                  allEventsIds: HashSet[Int]): Unit = {
+    events.foreach{ case(fid, e) =>
+        followerIdToEndpoint(fid).send(RemoteCompletionEventsFromLeader(epoch, e, allEventsIds))
+    }
+  }
+
+  def sendRemoteEventsToLeader(followerId: Int,
+                               epoch: Long,
+                               events: HashSet[CompletionEvent],
+                               ask: HashSet[Int]): Unit = {
+    getLeaderEndpoint(followerId)
+      .send(RemoteCompletionEventsFromFollower(followerId, epoch, events, ask))
   }
 
   override def stop() {

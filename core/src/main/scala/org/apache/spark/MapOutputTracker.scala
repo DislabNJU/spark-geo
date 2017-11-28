@@ -574,6 +574,17 @@ private[spark] class MapOutputTrackerMaster(conf: SparkConf,
     }
   }
 
+  def getMapStatuses(): Map[Int, Array[MapStatus]] = {
+    mapStatuses
+  }
+
+  def recoverMapStatuses(statuses: Map[Int, Array[MapStatus]]): Unit = {
+    statuses.foreach{case(id, s) =>
+        registerMapOutputs(id, s)
+    }
+
+  }
+
   override def stop() {
     mapOutputRequests.offer(PoisonPill)
     threadpool.shutdown()

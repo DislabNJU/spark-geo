@@ -24,13 +24,12 @@ import scala.annotation.meta.param
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Map}
 import scala.language.reflectiveCalls
 import scala.util.control.NonFatal
-
 import org.scalatest.concurrent.Timeouts
 import org.scalatest.time.SpanSugar._
-
 import org.apache.spark._
 import org.apache.spark.broadcast.BroadcastManager
 import org.apache.spark.rdd.RDD
+import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.shuffle.{FetchFailedException, MetadataFetchFailedException}
 import org.apache.spark.storage.{BlockId, BlockManagerId, BlockManagerMaster}
@@ -128,6 +127,19 @@ class DAGSchedulerSuite extends SparkFunSuite with LocalSparkContext with Timeou
     override def defaultParallelism() = 2
     override def executorLost(executorId: String, reason: ExecutorLossReason): Unit = {}
     override def applicationAttemptId(): Option[String] = None
+
+    override def submitTasksAdditional(taskSetName: String, taskSet: TaskSet): Unit = {}
+    override def registerAsFollower(followerId: Int,
+                                    leaderEndpointRef: RpcEndpointRef): Boolean = true
+    override def sendRemoteEventsToFollowers(
+        epoch: Long,
+        events: HashMap[Int, HashSet[CompletionEvent]],
+        allEventsIds: HashSet[Int]): Unit = {}
+    override def sendRemoteEventsToLeader(followerId: Int,
+                                          epoch: Long,
+                                          events: HashSet[CompletionEvent],
+                                          ask: HashSet[Int]): Unit = {}
+    override def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = null
   }
 
   /** Length of time to wait while draining listener events. */
@@ -544,6 +556,19 @@ class DAGSchedulerSuite extends SparkFunSuite with LocalSparkContext with Timeou
           blockManagerId: BlockManagerId): Boolean = true
       override def executorLost(executorId: String, reason: ExecutorLossReason): Unit = {}
       override def applicationAttemptId(): Option[String] = None
+
+      override def submitTasksAdditional(taskSetName: String, taskSet: TaskSet): Unit = {}
+      override def registerAsFollower(followerId: Int,
+                                      leaderEndpointRef: RpcEndpointRef): Boolean = true
+      override def sendRemoteEventsToFollowers(
+          epoch: Long,
+          events: HashMap[Int, HashSet[CompletionEvent]],
+          allEventsIds: HashSet[Int]): Unit = {}
+      override def sendRemoteEventsToLeader(followerId: Int,
+                                            epoch: Long,
+                                            events: HashSet[CompletionEvent],
+                                            ask: HashSet[Int]): Unit = {}
+      override def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = null
     }
     val noKillScheduler = new DAGScheduler(
       sc,

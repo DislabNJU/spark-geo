@@ -21,8 +21,10 @@ import java.nio.ByteBuffer
 
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.rpc.RpcEndpointRef
-import org.apache.spark.scheduler.ExecutorLossReason
+import org.apache.spark.scheduler.{CompletionEvent, ExecutorLossReason}
 import org.apache.spark.util.SerializableBuffer
+
+import scala.collection.mutable.HashSet
 
 private[spark] sealed trait CoarseGrainedClusterMessage extends Serializable
 
@@ -105,5 +107,23 @@ private[spark] object CoarseGrainedClusterMessages {
 
   // Used internally by executors to shut themselves down.
   case object Shutdown extends CoarseGrainedClusterMessage
+
+  // added by lxb
+  case class RemoteCompletionEventsFromLeader(epoch: Long,
+                                              events: HashSet[CompletionEvent],
+                                              allEventsIds: HashSet[Int])
+    extends CoarseGrainedClusterMessage
+
+  case class RemoteCompletionEventsFromFollower(followerId: Int,
+                                                epoch: Long,
+                                                events: HashSet[CompletionEvent],
+                                                ask: HashSet[Int])
+    extends CoarseGrainedClusterMessage
+
+  case class RegisterAsFollower(followerId: Int, followerEndpoint: RpcEndpointRef)
+    extends CoarseGrainedClusterMessage
+
+  case class RecoverApplication(followerId: Int)
+    extends CoarseGrainedClusterMessage
 
 }

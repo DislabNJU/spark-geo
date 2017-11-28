@@ -17,10 +17,13 @@
 
 package org.apache.spark.scheduler
 
+import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.{LocalSparkContext, SparkConf, SparkContext, SparkFunSuite}
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.AccumulatorV2
+
+import scala.collection.mutable.{HashMap, HashSet}
 
 class ExternalClusterManagerSuite extends SparkFunSuite with LocalSparkContext {
   test("launch of backend and scheduler") {
@@ -66,6 +69,20 @@ private class DummyTaskScheduler extends TaskScheduler {
   override def defaultParallelism(): Int = 2
   override def executorLost(executorId: String, reason: ExecutorLossReason): Unit = {}
   override def applicationAttemptId(): Option[String] = None
+
+  override def submitTasksAdditional(taskSetName: String, taskSet: TaskSet): Unit = {}
+  override def registerAsFollower(followerId: Int,
+                                  leaderEndpointRef: RpcEndpointRef): Boolean = true
+  override def sendRemoteEventsToFollowers(
+      epoch: Long,
+      events: HashMap[Int, HashSet[CompletionEvent]],
+      allEventsIds: HashSet[Int]): Unit = {}
+  override def sendRemoteEventsToLeader(followerId: Int,
+                                        epoch: Long,
+                                        events: HashSet[CompletionEvent],
+                                          ask: HashSet[Int]): Unit = {}
+  override def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = null
+
   def executorHeartbeatReceived(
       execId: String,
       accumUpdates: Array[(Long, Seq[AccumulatorV2[_, _]])],

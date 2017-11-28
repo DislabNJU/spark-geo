@@ -27,12 +27,13 @@ import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 import scala.language.postfixOps
 import scala.util.Random
-
 import org.apache.spark._
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.internal.Logging
+import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.scheduler.TaskLocality.TaskLocality
+import org.apache.spark.scheduler.cluster.CoarseGrainedSchedulerBackend
 import org.apache.spark.scheduler.local.LocalSchedulerBackend
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.{AccumulatorV2, ThreadUtils, Utils}
@@ -200,6 +201,33 @@ private[spark] class TaskSchedulerImpl(
     backend.reviveOffers()
   }
 
+  override def submitTasksAdditional(taskSetName: String, taskSet: TaskSet) {
+    val tasks = taskSet.tasks
+    logInfo("Adding task set " + taskSet.id + " with " + tasks.length + " tasks")
+    this.synchronized {
+      val manager = createTaskSetManager(taskSet, maxTaskFailures)
+      manager.name += taskSetName
+
+      schedulableBuilder.addTaskSetManager(manager, manager.taskSet.properties)
+
+      if (!isLocal && !hasReceivedTask) {
+        starvationTimer.scheduleAtFixedRate(new TimerTask() {
+          override def run() {
+            if (!hasLaunchedTask) {
+              logWarning("Initial job has not accepted any resources; " +
+                "check your cluster UI to ensure that workers are registered " +
+                "and have sufficient resources")
+            } else {
+              this.cancel()
+            }
+          }
+        }, STARVATION_TIMEOUT_MS, STARVATION_TIMEOUT_MS)
+      }
+      hasReceivedTask = true
+    }
+    backend.reviveOffers()
+  }
+
   // Label as private[scheduler] to allow tests to swap in different task set managers if necessary
   private[scheduler] def createTaskSetManager(
       taskSet: TaskSet,
@@ -225,6 +253,10 @@ private[spark] class TaskSchedulerImpl(
         logInfo("Stage %d was cancelled".format(stageId))
       }
     }
+  }
+
+  // TODO: called by DAGScheduler to cancel additional tasks
+  def cancelTasksAdditional(taskIds: Set[Long]): Unit = synchronized {
   }
 
   /**
@@ -447,6 +479,67 @@ private[spark] class TaskSchedulerImpl(
     }
   }
 
+  def onSchedulerBackendStarted(endpointRef: RpcEndpointRef): Unit = {
+    dagScheduler.onSchedulerBackendStarted(endpointRef)
+  }
+
+  def registerAsFollower(followerId: Int, leaderEndpointRef: RpcEndpointRef): Boolean = {
+    backend match {
+      case b: CoarseGrainedSchedulerBackend =>
+        b.registerAsFollower(followerId, leaderEndpointRef)
+      case _ =>
+    }
+  }
+
+  def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = {
+    backend match {
+      case b: CoarseGrainedSchedulerBackend =>
+        b.getRecoverInfoFromLeader(followerId)
+      case _ =>
+        null
+    }
+  }
+
+  def handleRecoverApplication(followerId: Int): RecoverInfo = {
+    dagScheduler.handleRecoverApplicationOnLeader(followerId)
+  }
+
+  def handleRemoteEventsFromLeader(epoch: Long,
+                                   events: HashSet[CompletionEvent],
+                                   allEventsIds: HashSet[Int]): Unit = {
+    dagScheduler.handleRemoteEventsFromLeader(epoch, events, allEventsIds)
+  }
+
+  def handleRemoteEventsFromFollower(followerId: Int,
+                                     epoch: Long,
+                                     events: HashSet[CompletionEvent],
+                                     ask: HashSet[Int]): Unit = {
+    dagScheduler.handleRemoteEventsFromFollower(followerId, epoch, events, ask)
+  }
+
+  override def sendRemoteEventsToFollowers(epoch: Long,
+                                           events: HashMap[Int, HashSet[CompletionEvent]],
+                                           allEventsIds: HashSet[Int]): Unit = {
+    backend match {
+      case b: CoarseGrainedSchedulerBackend =>
+        b.sendRemoteEventsToFollowers(epoch, events, allEventsIds)
+      case _ =>
+        logInfo("sendRemoteEventsToFollowers by wrong backend")
+    }
+  }
+
+  override def sendRemoteEventsToLeader(followerId: Int,
+                                        epoch: Long,
+                                        events: HashSet[CompletionEvent],
+                                        ask: HashSet[Int]): Unit = {
+    backend match {
+      case b: CoarseGrainedSchedulerBackend =>
+        b.sendRemoteEventsToLeader(followerId, epoch, events, ask)
+      case _ =>
+        logInfo("sendRemoteEventsToFollowers by wrong backend")
+    }
+  }
+
   override def stop() {
     speculationScheduler.shutdown()
     if (backend != null) {
@@ -619,6 +712,8 @@ private[spark] class TaskSchedulerImpl(
       manager
     }
   }
+
+
 
 }
 

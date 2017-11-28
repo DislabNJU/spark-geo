@@ -23,15 +23,13 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.annotation.tailrec
-import scala.collection.Map
+import scala.collection.{Map, mutable}
 import scala.collection.mutable.{HashMap, HashSet, Stack}
 import scala.concurrent.duration._
 import scala.language.existentials
 import scala.language.postfixOps
-import scala.util.control.NonFatal
-
+import scala.util.control.{ControlThrowable, NonFatal}
 import org.apache.commons.lang3.SerializationUtils
-
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.executor.TaskMetrics
@@ -39,7 +37,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.partial.{ApproximateActionListener, ApproximateEvaluator, PartialResult}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.rpc.RpcTimeout
+import org.apache.spark.rpc.{RpcEndpointRef, RpcTimeout}
+import org.apache.spark.sparkzk.zkclient.ZkSparkAmInfoManager
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
 import org.apache.spark.util._
@@ -187,6 +186,244 @@ class DAGScheduler(
   private[scheduler] val eventProcessLoop = new DAGSchedulerEventProcessLoop(this)
   taskScheduler.setDAGScheduler(this)
 
+
+  private var syncEpoch: Long = 0
+
+  protected val syncEpochLock = new AnyRef
+
+  // completion events epoch
+  private var ceEpoch: Long = 0
+
+  private val eventsFromLeader = new mutable.HashMap[Long, HashSet[CompletionEvent]]
+
+  // completion events received from followers during current epoch
+  private val eventsFromFollower = new mutable.HashMap[Int, HashSet[CompletionEvent]]
+
+  // completion events received from local (during current epoch on leader)
+  private val eventsFromLocal = new HashSet[CompletionEvent]
+
+  private val eventsFromLocalOnLeader = new HashSet[CompletionEvent]
+
+  private val eventsFromLocalOnFollower = new HashSet[CompletionEvent]
+
+  private val eventsToSendToLeader = new HashSet[CompletionEvent]
+
+  private val eventsHandled = new HashSet[CompletionEvent]
+
+  // lock eventsFromFollower
+  protected val followerLock = new AnyRef
+
+  // lock eventsFromLocal
+  protected val localLock = new AnyRef
+
+  // eventsToSendToLeader
+  protected val toLeaderLock = new AnyRef
+
+  // ecEpoch to events
+  private val historyEventsByEpoch = new mutable.HashMap[Long, HashSet[CompletionEvent]]
+
+  protected val historyEventsLock = new AnyRef
+
+  // followerId to eventsIds
+  private val askFromFollower = new mutable.HashMap[Int, HashSet[Int]]
+
+  // follower ask leader for some events
+  private val askList = new HashSet[Int]
+
+  protected val askListLock = new AnyRef
+
+  private val rmHost = sc.getConf.get("spark.local.namenode1")
+
+  private val id: Int = sc.getConf.getInt("spark.clusterId." + rmHost, -1)
+
+  private var isLeader = false
+
+  private val syncInfo: SyncInfo = new SyncInfo()
+
+  private var recoverInfo: RecoverInfo = new RecoverInfo()
+
+  private val jobResults = new HashMap[Int, HashMap[Int, Any]]
+
+  // if it's in the middle of recovering
+  private var recoveringJob = false
+
+  private var recoveringStage = false
+
+  // val completionEventPoll = new HashSet[CompletionEvent]
+
+  // private val completionEventHandled = new HashSet[CompletionEvent]
+
+  private val taskDistributor = new TaskDistributor()
+
+  // send remote events
+  private val sendRemoteEvents =
+  ThreadUtils.newDaemonSingleThreadScheduledExecutor("spark-sendRemoteEvents")
+
+  def startSendRemoteEvents(): Unit = {
+
+    val sendEvents = new Runnable() {
+      override def run(): Unit = {
+        try {
+          // TODO: sync first
+          if (isLeader) {
+            sendRemoteEventsToFollowers()
+          } else {
+            sendRemoteEventsToLeader()
+          }
+        } catch {
+          case ct: ControlThrowable =>
+            throw ct
+          case t: Throwable =>
+            logWarning(s"Uncaught exception in thread ${Thread.currentThread().getName}", t)
+        }
+      }
+    }
+    sendRemoteEvents.scheduleWithFixedDelay(sendEvents, 0, 5000, TimeUnit.MILLISECONDS)
+  }
+
+  def onSchedulerBackendStarted(endpointRef: RpcEndpointRef): Unit = {
+    // 1. register To ZK
+    // 2. Leader get follower Info and send syncInfo
+    // 3. follower get syncInfo and register to leader
+    // 4. startSendRemoteEvents()
+  }
+
+  def onStageStarted(): Unit = {
+    eventsFromLeader.clear()
+    eventsFromFollower.clear()
+    eventsFromLocal.clear()
+    eventsFromLocalOnLeader.clear()
+    eventsFromLocalOnFollower.clear()
+    eventsToSendToLeader.clear()
+    eventsHandled .clear()
+    historyEventsByEpoch.clear()
+
+  }
+
+  /** Called to get current epoch number. */
+  def getSyncEpoch: Long = {
+    syncEpochLock.synchronized {
+      return syncEpoch
+    }
+  }
+
+  def updateSyncEpoch(newEpoch: Long) {
+    syncEpochLock.synchronized {
+      if (newEpoch > syncEpoch) {
+        logInfo("Updating epoch to " + newEpoch + " and clearing cache")
+        syncEpoch = newEpoch
+        // TODO
+      }
+    }
+  }
+
+  def addEventsToHistory(events: HashSet[CompletionEvent]): Unit = {
+    historyEventsLock.synchronized {
+      historyEventsByEpoch.getOrElseUpdate(ceEpoch, new HashSet[CompletionEvent]()) ++ events
+    }
+  }
+
+  def getEventsToHistory(): HashMap[Long, HashSet[CompletionEvent]] = {
+    historyEventsLock.synchronized {
+      historyEventsByEpoch
+    }
+  }
+
+  def addEventToSendOnFollower(event: CompletionEvent): Unit = {
+    toLeaderLock.synchronized {
+      eventsToSendToLeader += event
+    }
+  }
+
+  def getEventsToSendToLeader(): HashSet[CompletionEvent] = {
+    var events = new HashSet[CompletionEvent]
+    toLeaderLock.synchronized {
+      events = eventsToSendToLeader
+      eventsToSendToLeader.clear()
+    }
+    events
+  }
+
+
+  def getEventsFromFollower(getAndClear: Boolean = true): HashMap[Int, HashSet[CompletionEvent]] = {
+
+    var events = new mutable.HashMap[Int, HashSet[CompletionEvent]]
+    followerLock.synchronized {
+      events = eventsFromFollower.clone()
+      if (getAndClear) {
+        eventsFromFollower.clear()
+      }
+    }
+    events
+  }
+
+  def getEventsFromLocal(getAndClear: Boolean = true): HashSet[CompletionEvent] = {
+
+    var events = new HashSet[CompletionEvent]
+    localLock.synchronized {
+      if (isLeader) {
+        events = eventsFromLocalOnLeader.clone()
+        if (getAndClear) {
+          eventsFromLocalOnLeader.clear()
+        }
+      } else {
+        events = eventsFromLocalOnFollower.clone()
+        if (getAndClear) {
+          eventsFromLocalOnFollower.clear()
+        }
+      }
+    }
+    events
+  }
+
+  def addEventsFromLocal(event: CompletionEvent): Unit = {
+    localLock.synchronized {
+      if (isLeader) {
+        eventsFromLocalOnLeader += event
+      } else {
+        eventsFromLocalOnFollower += event
+      }
+    }
+  }
+
+  // return map[followerId, eventSet]
+  def getEventsToSendOnLeader(getAndClear: Boolean): HashMap[Int, HashSet[CompletionEvent]] = {
+    val followerEvents = getEventsFromFollower(getAndClear)
+    val localEvents = getEventsFromLocal(getAndClear)
+
+    var historyEventsById = new HashMap[Int, CompletionEvent]
+    historyEventsByEpoch.foreach { case(ep, es) =>
+      historyEventsById ++= es.map {e => (e.task.partitionId, e)}.toMap
+    }
+
+    val followerEventsSet = new HashSet[CompletionEvent]
+    followerEvents.foreach{ case(fid, e) =>
+      followerEventsSet ++= e
+    }
+
+    var asks = new mutable.HashMap[Int, HashSet[Int]]
+    askListLock.synchronized {
+      asks = askFromFollower
+      askFromFollower.clear()
+    }
+    val eventsToSend = new HashMap[Int, HashSet[CompletionEvent]]
+    followerEvents.foreach{ case(fid, es) =>
+      val askResponse = new mutable.HashSet[CompletionEvent]
+      asks(fid).foreach { eid =>
+        if (historyEventsById.isDefinedAt(eid)) {
+          askResponse += historyEventsById(eid)
+        }
+      }
+      eventsToSend.put(fid, followerEventsSet.diff(es) ++ localEvents ++ askResponse)
+    }
+
+    // TODO: what if leader receive followers' event before they get new epoch
+    historyEventsByEpoch.put(ceEpoch, localEvents ++ followerEventsSet)
+    ceEpoch += 1
+
+    eventsToSend
+  }
+
   /**
    * Called by the TaskSetManager to report task's starting.
    */
@@ -201,6 +438,7 @@ class DAGScheduler(
   def taskGettingResult(taskInfo: TaskInfo) {
     eventProcessLoop.post(GettingResultEvent(taskInfo))
   }
+
 
   /**
    * Called by the TaskSetManager to report task completions or failures.
@@ -592,6 +830,136 @@ class DAGScheduler(
     waiter
   }
 
+  def submitJobOnLeader[T, U](
+      rdd: RDD[T],
+      func: (TaskContext, Iterator[T]) => U,
+      partitions: Seq[Int],
+      callSite: CallSite,
+      resultHandler: (Int, U) => Unit,
+      properties: Properties): JobWaiter[U] = {
+    // Check to make sure we are not launching a task on a partition that does not exist.
+    val maxPartitions = rdd.partitions.length
+    partitions.find(p => p >= maxPartitions || p < 0).foreach { p =>
+      throw new IllegalArgumentException(
+        "Attempting to access a non-existent partition: " + p + ". " +
+          "Total number of partitions: " + maxPartitions)
+    }
+
+    val jobId = nextJobId.getAndIncrement()
+
+    // TODO: sync Point (rdd, partitions, jobId)
+    syncInfo.setJobId(jobId)
+    syncInfo.setRDD(rdd)
+    syncInfo.setPartitions(partitions)
+
+    if (partitions.size == 0) {
+      // Return immediately if the job is running 0 tasks
+      return new JobWaiter[U](this, jobId, 0, resultHandler)
+    }
+
+    assert(partitions.size > 0)
+    val func2 = func.asInstanceOf[(TaskContext, Iterator[_]) => _]
+    val waiter = new JobWaiter(this, jobId, partitions.size, resultHandler)
+    eventProcessLoop.post(JobSubmitted(
+      jobId, rdd, func2, partitions.toArray, callSite, waiter,
+      SerializationUtils.clone(properties)))
+    waiter
+  }
+
+  def submitJobOnFollower[T, U](
+      rdd: RDD[T],
+      func: (TaskContext, Iterator[T]) => U,
+      partitions: Seq[Int],
+      callSite: CallSite,
+      resultHandler: (Int, U) => Unit,
+      properties: Properties): JobWaiter[U] = {
+
+    // TODO: sync Point (rdd, partitions, jobId)
+    // check if isLeader
+    // if true, call submitJobOnLeader()
+    if (isLeader) {
+      return submitJobOnLeader(rdd, func, partitions, callSite, resultHandler, properties)
+    }
+
+    // Check to make sure we are not launching a task on a partition that does not exist.
+    val maxPartitions = rdd.partitions.length
+    partitions.find(p => p >= maxPartitions || p < 0).foreach { p =>
+      throw new IllegalArgumentException(
+        "Attempting to access a non-existent partition: " + p + ". " +
+          "Total number of partitions: " + maxPartitions)
+    }
+
+    val jobId = nextJobId.getAndIncrement()
+
+    if (partitions.size == 0) {
+      // Return immediately if the job is running 0 tasks
+      return new JobWaiter[U](this, jobId, 0, resultHandler)
+    }
+
+    assert(partitions.size > 0)
+    val func2 = func.asInstanceOf[(TaskContext, Iterator[_]) => _]
+    val waiter = new JobWaiter(this, jobId, partitions.size, resultHandler)
+    eventProcessLoop.post(JobSubmitted(
+      jobId, rdd, func2, partitions.toArray, callSite, waiter,
+      SerializationUtils.clone(properties)))
+    waiter
+  }
+
+  /**
+    * TODO: Recover this application's jobs with the recover data from Leader.
+    * recover data:
+    * Success job table
+    *   job1 => result data(rt.outputId => event.result)
+    *   job2 => result data
+    *   ...
+    *
+    */
+  def recoverJob(job: ActiveJob): Unit = {
+    // return current local job's result to JobWaiter directly.
+    logDebug("recoveringJob(" + job + ")")
+
+    recoverInfo = getRecoverInfoFromLeader()
+    recoverInfo.jobResults.get(job.jobId).foreach{ case(tid, rt) =>
+      job.listener.taskSucceeded(tid, rt)
+    }
+  }
+
+  /**
+    * TODO: Recover Running job's stage(one stage at once) with the recover data from Leader.
+    * recover data:
+    * 1. Running stage id
+    * 2. Latest completed stage's snapshot of MapOutputTracker info(mapStatuses & epoch: simple way)
+    *     or each stage's results(not simple way)
+    * 3. Running stage's completed tasks' results
+    *
+    * Return true if success
+    */
+  def recoverStage(stage: Stage): Unit = {
+    // 1. if current local stageId < remote stageId
+    //      submit a empty TaskSet, markStageAsFinished;
+    // 2. if current local stageId == remote stageId
+    //      (1) recover MapOutputTracker's info
+    //      (2) handle completed tasks' results;
+
+    logDebug("recoveringStage(" + stage + ")")
+    recoverInfo = getRecoverInfoFromLeader()
+
+    if (stage.id == recoverInfo.runningStageId - 1) {
+      mapOutputTracker.recoverMapStatuses(recoverInfo.mapStatuses)
+    }
+    stage.pendingPartitions.clear()
+    runningStages += stage
+    stage match {
+      case s: ShuffleMapStage =>
+        outputCommitCoordinator.stageStart(stage = s.id, maxPartitionId = s.numPartitions - 1)
+      case s: ResultStage =>
+        outputCommitCoordinator.stageStart(
+          stage = s.id, maxPartitionId = s.rdd.partitions.length - 1)
+    }
+    markStageAsFinished(stage, None)
+  }
+
+
   /**
    * Run an action job on the given RDD and pass all the results to the resultHandler function as
    * they arrive.
@@ -614,7 +982,26 @@ class DAGScheduler(
       resultHandler: (Int, U) => Unit,
       properties: Properties): Unit = {
     val start = System.nanoTime
-    val waiter = submitJob(rdd, func, partitions, callSite, resultHandler, properties)
+    // val waiter = submitJob(rdd, func, partitions, callSite, resultHandler, properties)
+
+    if (getSyncEpoch == 0) {
+      // TODO: make sure the first sync has been made
+      // first sync should be done at or before this point, to make sure who is Leader.
+    }
+
+    // completionEventPoll.clear()
+    // completionEventHandled.clear()
+
+    val waiter = isLeader match {
+      case true =>
+        submitJobOnLeader(rdd, func, partitions, callSite, resultHandler, properties)
+      case false =>
+        submitJobOnFollower(rdd, func, partitions, callSite, resultHandler, properties)
+    }
+
+    // TODO: (Followers) check if local jobId == remote jobId
+    // TODO: if not, call recoverApplication()
+
     // Note: Do not call Await.ready(future) because that calls `scala.concurrent.blocking`,
     // which causes concurrent SQL executions to fail if a fork-join pool is used. Note that
     // due to idiosyncrasies in Scala, `awaitPermission` is not actually used anywhere so it's
@@ -870,9 +1257,19 @@ class DAGScheduler(
     val stageInfos = stageIds.flatMap(id => stageIdToStage.get(id).map(_.latestInfo))
     listenerBus.post(
       SparkListenerJobStart(job.jobId, jobSubmissionTime, stageInfos, properties))
-    submitStage(finalStage)
 
-    submitWaitingStages()
+    // TODO: sync first, check if local jobId == remote jobId
+    // TODO: if not, don't submit stage, just continue
+
+    if(!isLeader && jobId < syncInfo.jobId) {
+      recoverJob(job)
+    } else {
+      recoverInfo.setJobId(jobId)
+
+      submitStage(finalStage)
+
+      submitWaitingStages()
+    }
   }
 
   private[scheduler] def handleMapStageSubmitted(jobId: Int,
@@ -930,7 +1327,28 @@ class DAGScheduler(
         logDebug("missing: " + missing)
         if (missing.isEmpty) {
           logInfo("Submitting " + stage + " (" + stage.rdd + "), which has no missing parents")
-          submitMissingTasks(stage, jobId.get)
+          // submitMissingTasks(stage, jobId.get)
+
+          // TODO: sync point, to make sure the Leader is still alive
+          if (isLeader) {
+            onStageStarted()
+            submitMissingTasksOnLeader(stage, jobId.get)
+            syncInfo.setStageId(stage.id)
+          } else {
+
+            if (jobId.get < syncInfo.jobId) {
+              recoverJob(jobIdToActiveJob(jobId.get))
+              return
+            }
+            if (stage.id < syncInfo.stageId) {
+              recoverStage(stage)
+              return
+            }
+
+            onStageStarted()
+            submitMissingTasksOnFollower(stage, jobId.get)
+          }
+          recoverInfo.setStageId(stage.id)
         } else {
           for (parent <- missing) {
             submitStage(parent)
@@ -1076,6 +1494,416 @@ class DAGScheduler(
     }
   }
 
+
+  private def submitMissingTasksOnLeader(stage: Stage, jobId: Int) {
+    logDebug("submitMissingTasksOnLeader(" + stage + ")")
+    // Get our pending tasks and remember them in our pendingTasks entry
+    stage.pendingPartitions.clear()
+
+    // TODO: sync point, distribute Leadership and subPartitions to other cluster
+    // TODO: (jobId, stageId(attempId), subPartitions1, subPartitions2, ...)
+    // TODO: use partitionsToCompute to makeNewStageAttempt()
+    // TODO: use subPartition to get taskIdToLocations
+    // TODO: stage.pendingPartitions should be global
+
+
+    // First figure out the indexes of partition ids to compute.
+    val partitionsToCompute: Seq[Int] = stage.findMissingPartitions()
+
+    val partners = taskDistributor.distributeTaskByRandom(partitionsToCompute, syncInfo.partners)
+    syncInfo.setPartners(partners)
+    // TODO: put it to zk
+    val partitionsComputeLocal = partners(id).subPartitions
+
+    // Use the scheduling pool, job group, description, etc. from an ActiveJob associated
+    // with this Stage
+    val properties = jobIdToActiveJob(jobId).properties
+
+    runningStages += stage
+    // SparkListenerStageSubmitted should be posted before testing whether tasks are
+    // serializable. If tasks are not serializable, a SparkListenerStageCompleted event
+    // will be posted, which should always come after a corresponding SparkListenerStageSubmitted
+    // event.
+    stage match {
+      case s: ShuffleMapStage =>
+        outputCommitCoordinator.stageStart(stage = s.id, maxPartitionId = s.numPartitions - 1)
+      case s: ResultStage =>
+        outputCommitCoordinator.stageStart(
+          stage = s.id, maxPartitionId = s.rdd.partitions.length - 1)
+    }
+    val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
+      stage match {
+        case s: ShuffleMapStage =>
+          partitionsComputeLocal.map { id => (id, getPreferredLocs(stage.rdd, id))}.toMap
+        case s: ResultStage =>
+          val job = s.activeJob.get
+          partitionsComputeLocal.map { id =>
+            val p = s.partitions(id)
+            (id, getPreferredLocs(stage.rdd, p))
+          }.toMap
+      }
+    } catch {
+      case NonFatal(e) =>
+        stage.makeNewStageAttempt(partitionsToCompute.size)
+        listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
+        abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
+        runningStages -= stage
+        return
+    }
+
+    stage.makeNewStageAttempt(partitionsToCompute.size, taskIdToLocations.values.toSeq)
+    listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
+
+    var taskBinary: Broadcast[Array[Byte]] = null
+    try {
+      // For ShuffleMapTask, serialize and broadcast (rdd, shuffleDep).
+      // For ResultTask, serialize and broadcast (rdd, func).
+      val taskBinaryBytes: Array[Byte] = stage match {
+        case stage: ShuffleMapStage =>
+          JavaUtils.bufferToArray(
+            closureSerializer.serialize((stage.rdd, stage.shuffleDep): AnyRef))
+        case stage: ResultStage =>
+          JavaUtils.bufferToArray(closureSerializer.serialize((stage.rdd, stage.func): AnyRef))
+      }
+
+      taskBinary = sc.broadcast(taskBinaryBytes)
+    } catch {
+      // In the case of a failure during serialization, abort the stage.
+      case e: NotSerializableException =>
+        abortStage(stage, "Task not serializable: " + e.toString, Some(e))
+        runningStages -= stage
+
+        // Abort execution
+        return
+      case NonFatal(e) =>
+        abortStage(stage, s"Task serialization failed: $e\n${Utils.exceptionString(e)}", Some(e))
+        runningStages -= stage
+        return
+    }
+
+    val tasks: Seq[Task[_]] = try {
+      stage match {
+        case stage: ShuffleMapStage =>
+          partitionsToCompute.map { id =>
+            val locs = taskIdToLocations(id)
+            val part = stage.rdd.partitions(id)
+            new ShuffleMapTask(stage.id, stage.latestInfo.attemptId,
+              taskBinary, part, locs, stage.latestInfo.taskMetrics, properties)
+          }
+
+        case stage: ResultStage =>
+          val job = stage.activeJob.get
+          partitionsToCompute.map { id =>
+            val p: Int = stage.partitions(id)
+            val part = stage.rdd.partitions(p)
+            val locs = taskIdToLocations(id)
+            new ResultTask(stage.id, stage.latestInfo.attemptId,
+              taskBinary, part, locs, id, properties, stage.latestInfo.taskMetrics)
+          }
+      }
+    } catch {
+      case NonFatal(e) =>
+        abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
+        runningStages -= stage
+        return
+    }
+
+    if (tasks.size > 0) {
+      logInfo("Submitting " + tasks.size + " missing tasks from " + stage + " (" + stage.rdd + ")")
+      // stage.pendingPartitions ++= tasks.map(_.partitionId)
+      stage.pendingPartitions ++= partitionsToCompute.toSet
+      logDebug("New pending partitions: " + stage.pendingPartitions)
+      taskScheduler.submitTasks(new TaskSet(
+        tasks.toArray, stage.id, stage.latestInfo.attemptId, jobId, properties))
+      stage.latestInfo.submissionTime = Some(clock.getTimeMillis())
+    } else {
+      // Because we posted SparkListenerStageSubmitted earlier, we should mark
+      // the stage as completed here in case there are no tasks to run
+      markStageAsFinished(stage, None)
+
+      val debugString = stage match {
+        case stage: ShuffleMapStage =>
+          s"Stage ${stage} is actually done; " +
+            s"(available: ${stage.isAvailable}," +
+            s"available outputs: ${stage.numAvailableOutputs}," +
+            s"partitions: ${stage.numPartitions})"
+        case stage : ResultStage =>
+          s"Stage ${stage} is actually done; (partitions: ${stage.numPartitions})"
+      }
+      logDebug(debugString)
+    }
+  }
+
+
+  private def submitMissingTasksOnFollower(stage: Stage, jobId: Int) {
+    logDebug("submitMissingTasksOnFollower(" + stage + ")")
+    // Get our pending tasks and remember them in our pendingTasks entry
+    stage.pendingPartitions.clear()
+
+    // TODO: sync point
+    // TODO: 1. check if isLeader, if true, call submitMissingTasksOnLeader()
+
+    // TODO: 4. after recover, get subPartitions from Leader
+    // TODO:    (jobId, stageId(attempId), subPartitions1, subPartitions2, ...)
+    // TODO:    use partitionsToCompute to makeNewStageAttempt()
+    // TODO:    use subPartition to get taskIdToLocations
+    // TODO: stage.pendingPartitions should be global
+
+    if (isLeader) {
+      submitMissingTasksOnLeader(stage, jobId)
+      return
+    }
+
+
+    // First figure out the indexes of partition ids to compute.
+    val partitionsToCompute: Seq[Int] = stage.findMissingPartitions()
+
+    // TODO: get syncInfo from zk
+    if (syncInfo.jobId != jobId || syncInfo.stageId != stage.id) {
+      // wait and get syncInfo
+    }
+    val partitionsComputeLocal = syncInfo.partners(id).subPartitions
+
+    // Use the scheduling pool, job group, description, etc. from an ActiveJob associated
+    // with this Stage
+    val properties = jobIdToActiveJob(jobId).properties
+
+    runningStages += stage
+    // SparkListenerStageSubmitted should be posted before testing whether tasks are
+    // serializable. If tasks are not serializable, a SparkListenerStageCompleted event
+    // will be posted, which should always come after a corresponding SparkListenerStageSubmitted
+    // event.
+    stage match {
+      case s: ShuffleMapStage =>
+        outputCommitCoordinator.stageStart(stage = s.id, maxPartitionId = s.numPartitions - 1)
+      case s: ResultStage =>
+        outputCommitCoordinator.stageStart(
+          stage = s.id, maxPartitionId = s.rdd.partitions.length - 1)
+    }
+    val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
+      stage match {
+        case s: ShuffleMapStage =>
+          partitionsComputeLocal.map { id => (id, getPreferredLocs(stage.rdd, id))}.toMap
+        case s: ResultStage =>
+          val job = s.activeJob.get
+          partitionsComputeLocal.map { id =>
+            val p = s.partitions(id)
+            (id, getPreferredLocs(stage.rdd, p))
+          }.toMap
+      }
+    } catch {
+      case NonFatal(e) =>
+        stage.makeNewStageAttempt(partitionsToCompute.size)
+        listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
+        abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
+        runningStages -= stage
+        return
+    }
+
+    stage.makeNewStageAttempt(partitionsToCompute.size, taskIdToLocations.values.toSeq)
+    listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
+
+    var taskBinary: Broadcast[Array[Byte]] = null
+    try {
+      // For ShuffleMapTask, serialize and broadcast (rdd, shuffleDep).
+      // For ResultTask, serialize and broadcast (rdd, func).
+      val taskBinaryBytes: Array[Byte] = stage match {
+        case stage: ShuffleMapStage =>
+          JavaUtils.bufferToArray(
+            closureSerializer.serialize((stage.rdd, stage.shuffleDep): AnyRef))
+        case stage: ResultStage =>
+          JavaUtils.bufferToArray(closureSerializer.serialize((stage.rdd, stage.func): AnyRef))
+      }
+
+      taskBinary = sc.broadcast(taskBinaryBytes)
+    } catch {
+      // In the case of a failure during serialization, abort the stage.
+      case e: NotSerializableException =>
+        abortStage(stage, "Task not serializable: " + e.toString, Some(e))
+        runningStages -= stage
+
+        // Abort execution
+        return
+      case NonFatal(e) =>
+        abortStage(stage, s"Task serialization failed: $e\n${Utils.exceptionString(e)}", Some(e))
+        runningStages -= stage
+        return
+    }
+
+    val tasks: Seq[Task[_]] = try {
+      stage match {
+        case stage: ShuffleMapStage =>
+          partitionsToCompute.map { id =>
+            val locs = taskIdToLocations(id)
+            val part = stage.rdd.partitions(id)
+            new ShuffleMapTask(stage.id, stage.latestInfo.attemptId,
+              taskBinary, part, locs, stage.latestInfo.taskMetrics, properties)
+          }
+
+        case stage: ResultStage =>
+          val job = stage.activeJob.get
+          partitionsToCompute.map { id =>
+            val p: Int = stage.partitions(id)
+            val part = stage.rdd.partitions(p)
+            val locs = taskIdToLocations(id)
+            new ResultTask(stage.id, stage.latestInfo.attemptId,
+              taskBinary, part, locs, id, properties, stage.latestInfo.taskMetrics)
+          }
+      }
+    } catch {
+      case NonFatal(e) =>
+        abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
+        runningStages -= stage
+        return
+    }
+
+    if (tasks.size > 0) {
+      logInfo("Submitting " + tasks.size + " missing tasks from " + stage + " (" + stage.rdd + ")")
+      // stage.pendingPartitions ++= tasks.map(_.partitionId)
+      stage.pendingPartitions ++= partitionsToCompute.toSet
+      logDebug("New pending partitions: " + stage.pendingPartitions)
+      taskScheduler.submitTasks(new TaskSet(
+        tasks.toArray, stage.id, stage.latestInfo.attemptId, jobId, properties))
+      stage.latestInfo.submissionTime = Some(clock.getTimeMillis())
+    } else {
+      // Because we posted SparkListenerStageSubmitted earlier, we should mark
+      // the stage as completed here in case there are no tasks to run
+      markStageAsFinished(stage, None)
+
+      val debugString = stage match {
+        case stage: ShuffleMapStage =>
+          s"Stage ${stage} is actually done; " +
+            s"(available: ${stage.isAvailable}," +
+            s"available outputs: ${stage.numAvailableOutputs}," +
+            s"partitions: ${stage.numPartitions})"
+        case stage : ResultStage =>
+          s"Stage ${stage} is actually done; (partitions: ${stage.numPartitions})"
+      }
+      logDebug(debugString)
+    }
+  }
+
+  private def submitMissingTasksAdditional(stage: Stage, jobId: Int, partitions: Seq[Int]): Unit = {
+    // TODO: called when Leader or Follower down, submit it's tasks
+    // in TaskScheduler, only one TaskSetManager(include one TaskSet) are allowed
+    // for a stage attemp, so we need to maintain the TaskSets(etc TaskSetManagers in TaskScheduler)
+    // which are submitted after the first one. And every TaskSetManager should have
+    // an unique name, so the schedulingMode(taskSetScheduler) can schedule them.
+    // Add a submitTasksAdditional() to due with these new TaskSets.
+
+    logDebug("submitMissingTasksAdditional(" + stage + ")")
+    // Get our pending tasks and remember them in our pendingTasks entry
+
+    // First figure out the indexes of partition ids to compute.
+    val partitionsToCompute: Seq[Int] = partitions
+
+    // Use the scheduling pool, job group, description, etc. from an ActiveJob associated
+    // with this Stage
+    val properties = jobIdToActiveJob(jobId).properties
+
+    // SparkListenerStageSubmitted should be posted before testing whether tasks are
+    // serializable. If tasks are not serializable, a SparkListenerStageCompleted event
+    // will be posted, which should always come after a corresponding SparkListenerStageSubmitted
+    // event.
+
+    val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
+      stage match {
+        case s: ShuffleMapStage =>
+          partitionsToCompute.map { id => (id, getPreferredLocs(stage.rdd, id))}.toMap
+        case s: ResultStage =>
+          val job = s.activeJob.get
+          partitionsToCompute.map { id =>
+            val p = s.partitions(id)
+            (id, getPreferredLocs(stage.rdd, p))
+          }.toMap
+      }
+    } catch {
+      case NonFatal(e) =>
+        logInfo("Additional Task creation failed")
+        // listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
+        return
+    }
+
+    // TODO: listenerBus.post(SparkListenerTaskSetSubmitted)
+
+
+    var taskBinary: Broadcast[Array[Byte]] = null
+    try {
+      // For ShuffleMapTask, serialize and broadcast (rdd, shuffleDep).
+      // For ResultTask, serialize and broadcast (rdd, func).
+      val taskBinaryBytes: Array[Byte] = stage match {
+        case stage: ShuffleMapStage =>
+          JavaUtils.bufferToArray(
+            closureSerializer.serialize((stage.rdd, stage.shuffleDep): AnyRef))
+        case stage: ResultStage =>
+          JavaUtils.bufferToArray(closureSerializer.serialize((stage.rdd, stage.func): AnyRef))
+      }
+
+      taskBinary = sc.broadcast(taskBinaryBytes)
+    } catch {
+      // In the case of a failure during serialization, abort the stage.
+      case e: NotSerializableException =>
+        // abortStage(stage, "Task not serializable: " + e.toString, Some(e))
+        // runningStages -= stage
+
+        logInfo("Additional Task not serializable")
+
+        // Abort execution
+        return
+      case NonFatal(e) =>
+        // abortStage(stage, s"Task serialization failed: $e\n${Utils.exceptionString(e)}", Some(e))
+        // runningStages -= stage
+
+        logInfo("Additional Task serialization failed")
+
+        return
+    }
+
+    val tasks: Seq[Task[_]] = try {
+      stage match {
+        case stage: ShuffleMapStage =>
+          partitionsToCompute.map { id =>
+            val locs = taskIdToLocations(id)
+            val part = stage.rdd.partitions(id)
+            new ShuffleMapTask(stage.id, stage.latestInfo.attemptId,
+              taskBinary, part, locs, stage.latestInfo.taskMetrics, properties)
+          }
+
+        case stage: ResultStage =>
+          val job = stage.activeJob.get
+          partitionsToCompute.map { id =>
+            val p: Int = stage.partitions(id)
+            val part = stage.rdd.partitions(p)
+            val locs = taskIdToLocations(id)
+            new ResultTask(stage.id, stage.latestInfo.attemptId,
+              taskBinary, part, locs, id, properties, stage.latestInfo.taskMetrics)
+          }
+      }
+    } catch {
+      case NonFatal(e) =>
+        // abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
+        // runningStages -= stage
+        logInfo("Additional Task creation failed")
+
+        return
+    }
+
+    if (tasks.size > 0) {
+      logInfo("Submitting " + tasks.size + " Additional tasks from "
+        + stage + " (" + stage.rdd + ")")
+      // stage.pendingPartitions ++= tasks.map(_.partitionId)
+      // logDebug("New pending partitions: " + stage.pendingPartitions)
+      taskScheduler.submitTasksAdditional(jobId.toString + stage.id.toString, new TaskSet(
+        tasks.toArray, stage.id, stage.latestInfo.attemptId, jobId, properties))
+      // stage.latestInfo.submissionTime = Some(clock.getTimeMillis())
+    } else {
+      // Because we posted SparkListenerStageSubmitted earlier, we should mark
+      // the stage as completed here in case there are no tasks to run
+
+      logInfo("Addition taskSet is empty")
+    }
+  }
+
   /**
    * Merge local values from a task into the corresponding accumulators previously registered
    * here on the driver.
@@ -1116,6 +1944,13 @@ class DAGScheduler(
    * modify the scheduler's internal state. Use taskEnded() to post a task end event from outside.
    */
   private[scheduler] def handleTaskCompletion(event: CompletionEvent) {
+
+    if (eventsHandled.contains(event)) {
+      return
+    } else {
+      eventsHandled.add(event)
+    }
+
     val task = event.task
     val taskId = event.taskInfo.id
     val stageId = task.stageId
@@ -1169,18 +2004,25 @@ class DAGScheduler(
                   updateAccumulators(event)
                   job.finished(rt.outputId) = true
                   job.numFinished += 1
+                  var updateRecoverInfo = false
                   // If the whole job has finished, remove it
                   if (job.numFinished == job.numPartitions) {
                     markStageAsFinished(resultStage)
                     cleanupStateForJobAndIndependentStages(job)
                     listenerBus.post(
                       SparkListenerJobEnd(job.jobId, clock.getTimeMillis(), JobSucceeded))
+                    updateRecoverInfo = true
                   }
 
                   // taskSucceeded runs some user code that might throw an exception. Make sure
                   // we are resilient against that.
                   try {
                     job.listener.taskSucceeded(rt.outputId, event.result)
+                    updateJobResults(job.jobId, rt.outputId, event.result, updateRecoverInfo)
+                    recoverInfo.setMapStatuses(mapOutputTracker.getMapStatuses())
+                    recoverInfo.setStageId(0)
+                    // completionEventHandled.add(event)
+                    // completionEventPoll.add(event)
                   } catch {
                     case e: Exception =>
                       // TODO: Perhaps we want to mark the resultStage as failed?
@@ -1222,6 +2064,9 @@ class DAGScheduler(
                 changeEpoch = true)
 
               clearCacheLocs()
+
+              recoverInfo.setMapStatuses(mapOutputTracker.getMapStatuses())
+              recoverInfo.setStageId(recoverInfo.runningStageId + 1)
 
               if (!shuffleStage.isAvailable) {
                 // Some tasks had failed; let's resubmit this shuffleStage
@@ -1319,6 +2164,29 @@ class DAGScheduler(
     }
     submitWaitingStages()
   }
+
+  private[scheduler] def handleTaskCompletionFromLocal(event: CompletionEvent): Unit = {
+    event.reason match {
+      case Success =>
+        addEventsFromLocal(event)
+        addEventToSendOnFollower(event)
+      case _ =>
+
+    }
+      handleTaskCompletion(event)
+  }
+
+  private[scheduler] def handleTaskCompletionFromRemote(followerId: Int,
+                                                        events: HashSet[CompletionEvent]): Unit = {
+    // TODO: called when receive new remote TaskCompletion event
+    followerLock.synchronized {
+      eventsFromFollower.getOrElseUpdate(followerId, new HashSet[CompletionEvent]()) ++= events
+    }
+    events.foreach{ e =>
+      handleTaskCompletion(e)
+    }
+  }
+
 
   /**
    * Responds to an executor being lost. This is called inside the event loop, so it assumes it can
@@ -1540,6 +2408,7 @@ class DAGScheduler(
   private[spark]
   def getPreferredLocs(rdd: RDD[_], partition: Int): Seq[TaskLocation] = {
     getPreferredLocsInternal(rdd, partition, new HashSet)
+    // TODO: replace remote location as *
   }
 
   /**
@@ -1597,6 +2466,123 @@ class DAGScheduler(
     job.listener.taskSucceeded(0, stats)
     cleanupStateForJobAndIndependentStages(job)
     listenerBus.post(SparkListenerJobEnd(job.jobId, clock.getTimeMillis(), JobSucceeded))
+  }
+
+  def updateJobResults(jobId: Int, outputId: Int, result: Any, updateRecoverInfo: Boolean): Unit = {
+    val results = jobResults.getOrElseUpdate(jobId, new mutable.HashMap[Int, Any]())
+    results(outputId) = result
+
+    if(updateRecoverInfo) {
+      recoverInfo.setJobResults(jobResults)
+    }
+  }
+
+  // TODO: called when partner(s) fail in Leader AM
+  // 1. reSubmit failed tasks belong to failed partners
+  // 2. reSubmit sAM to the clusters where failed partners belong to
+  def handlePartnersFailed(): Unit = {
+    val jobId = syncInfo.jobId
+    val stage = stageIdToStage(syncInfo.stageId)
+    var partitions: Seq[Int] = Seq.empty
+    syncInfo.partners.foreach {case(pid, info) =>
+        if (info.appMasterState == ApplicationMasterState.FAILED) {
+          partitions ++= info.subPartitions
+        }
+    }
+
+    var allReceivedEventsIds: HashSet[Int] = HashSet.empty
+    eventsFromLeader.foreach {case(ep, es) =>
+      allReceivedEventsIds ++= es.map {e => e.task.partitionId}
+    }
+
+    submitMissingTasksAdditional(stage, jobId, partitions.diff(allReceivedEventsIds.toSeq))
+
+  }
+
+  def registerAsFollower(): Boolean = {
+    val (leaderId, endpoint) = syncInfo.getLeaderInfo()
+    if (leaderId == id) {
+      // TODO:
+      isLeader = true
+      false
+    } else if (leaderId == -1) {
+      // TODO: call zk to election
+      false
+    } else {
+      taskScheduler.registerAsFollower(id, endpoint)
+    }
+  }
+
+  def handleRecoverApplicationOnLeader(followerId: Int): RecoverInfo = {
+    syncInfo.setFollowerState(followerId, ApplicationMasterState.RECOVERING)
+    // TODO: call zk to sync
+    recoverInfo
+  }
+
+  def getRecoverInfoFromLeader(): RecoverInfo = {
+    taskScheduler.getRecoverInfoFromLeader(id)
+  }
+
+  def sendRemoteEventsToLeader(): Unit = {
+    var ask = new HashSet[Int]
+    askListLock.synchronized {
+      ask = askList
+      askList.clear()
+    }
+    val events = getEventsToSendToLeader()
+    addEventsToHistory(events)
+    taskScheduler.sendRemoteEventsToLeader(id, ceEpoch, events, ask)
+  }
+
+  // called every few seconds
+  def sendRemoteEventsToFollowers(): Unit = {
+    val events = getEventsToSendOnLeader(true)
+    val allEventsIds = new HashSet[Int]
+    historyEventsByEpoch.foreach{ case(ep, es) =>
+      allEventsIds ++= es.map(e => e.task.partitionId)
+    }
+    taskScheduler.sendRemoteEventsToFollowers(ceEpoch, events, allEventsIds)
+  }
+
+  def handleRemoteEventsFromLeader(epoch: Long,
+                                   events: HashSet[CompletionEvent],
+                                   allEventsIds: HashSet[Int]): Unit = {
+    if (eventsFromLeader.isDefinedAt(epoch)) {
+      return
+    }
+    ceEpoch = epoch
+    eventsFromLeader.put(epoch, events)
+    addEventsToHistory(events)
+
+    events.foreach{ e =>
+      handleTaskCompletion(e)
+    }
+
+    val localEvents = getEventsFromLocal(false).map{ e => (e.task.partitionId, e)}.toMap
+    localEvents.keySet.diff(allEventsIds).foreach { id =>
+      addEventToSendOnFollower(localEvents(id))
+    }
+
+    var allReceivedEventsIds = localEvents.keySet
+    eventsFromLeader.foreach {case(ep, es) =>
+      allReceivedEventsIds ++= es.map {e => e.task.partitionId}
+    }
+    askListLock.synchronized {
+      askList ++= allEventsIds.diff(allReceivedEventsIds)
+    }
+  }
+
+  def handleRemoteEventsFromFollower(followerId: Int,
+                                     epoch: Long,
+                                     events: HashSet[CompletionEvent],
+                                     ask: HashSet[Int]): Unit = {
+    if (epoch != ceEpoch) {
+      // TODO: send history events to it
+    }
+    askListLock.synchronized {
+      askFromFollower(followerId) = ask
+    }
+    handleTaskCompletionFromRemote(followerId, events)
   }
 
   def stop() {
@@ -1661,7 +2647,7 @@ private[scheduler] class DAGSchedulerEventProcessLoop(dagScheduler: DAGScheduler
       dagScheduler.handleGetTaskResult(taskInfo)
 
     case completion: CompletionEvent =>
-      dagScheduler.handleTaskCompletion(completion)
+      dagScheduler.handleTaskCompletionFromLocal(completion)
 
     case TaskSetFailed(taskSet, reason, exception) =>
       dagScheduler.handleTaskSetFailed(taskSet, reason, exception)

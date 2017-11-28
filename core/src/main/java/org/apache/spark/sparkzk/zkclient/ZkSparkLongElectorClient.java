@@ -5,22 +5,22 @@ import org.apache.spark.sparkzk.zkclient.LeaderElect.RunningData;
 import org.apache.spark.sparkzk.zkclient.common.ZkClient;
 
 public class ZkSparkLongElectorClient {
-    private String myLocalHostName = null;
+    private String myClientId = null;
     private boolean masterTag = false;
     private ZkClient zkClient;
     private LongWorkServer workServer;
     private RunningData runningData;
     private int session_time_mil = 2000;
     private int connectTimeOutMil = 2000;
-    public ZkSparkLongElectorClient(String zkHostName, String myLocalHostName, int masterSelectNum){
-        this.myLocalHostName = myLocalHostName;
+    public ZkSparkLongElectorClient(String zkHostName, String appNodeName, String clientId, Long masterSelectNum){
+        this.myClientId = clientId;
         zkClient = new ZkClient(zkHostName, session_time_mil, connectTimeOutMil);
-        this.runningData = new RunningData(myLocalHostName);
-        this.workServer = new LongWorkServer(this.runningData, zkClient, masterSelectNum);
+        this.runningData = new RunningData(clientId);
+        this.workServer = new LongWorkServer(this.runningData, zkClient, appNodeName, masterSelectNum);
     }
 
 
-    public void setSelectNum(int num){
+    public void setSelectNum(Long num){
         this.workServer.setMasterSelectorNum(num);
     }
 
@@ -30,6 +30,10 @@ public class ZkSparkLongElectorClient {
 
     public boolean amIMaster(){
         return this.workServer.iAmMaster();
+    }
+
+    public int getMasterId(){
+        return this.workServer.masterId();
     }
 
 }

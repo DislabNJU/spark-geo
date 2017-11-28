@@ -18,13 +18,23 @@ public class ZkSparkDataClient {
      * nodename, zonode name
      * dataFreshTimeMill, fresh data time
      */
-    public ZkSparkDataClient(String hostName, String nodeName, int  dataFreshTimeMill){
+    public ZkSparkDataClient(String hostName, String appNodeName, int  dataFreshTimeMill){
         zk = new ZkClient(hostName);
         if(!zk.exists(dataRootPath)) {
             zk.createPersistent(dataRootPath);
         }
         this.dataFreshTimeMill = dataFreshTimeMill;
-        createDataNode(nodeName);
+
+        myNodeName = appNodeName;
+        String path = dataRootPath+"/"+appNodeName;
+        if(!zk.exists(path)) {
+            zk.createPersistent(path);
+        }
+        else{
+            System.out.println("create a node: "+path+" which has been exit!");
+        }
+        myDataPath = path;
+
         MonitorDataChange mdc = new MonitorDataChange();
         Thread mdcT = new Thread(mdc);
         mdcT.start();
@@ -35,23 +45,13 @@ public class ZkSparkDataClient {
     }
 
 
-    private void createDataNode(String nodeName){
-        myNodeName = nodeName;
-        String path = dataRootPath+"/"+nodeName;
-        if(!zk.exists(path)) {
-            zk.createPersistent(path);
-        }
-        else{
-            System.out.println("create a node: "+nodeName+" which has been exit!");
-        }
-        myDataPath = path;
-    }
 
-    public String  getMyNodeName(){
+
+    public String  getAppDataNodeName(){
         return myNodeName;
     }
 
-    public String getMyDataPath(){
+    public String getAppDataDataPath(){
         return myDataPath;
     }
 

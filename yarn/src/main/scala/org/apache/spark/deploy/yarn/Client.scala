@@ -1064,6 +1064,14 @@ private[spark] class Client(
       Seq("--nmhost", nameNodeHost)
 
 
+    val appName =
+      Seq("--appname", appId.toString)
+
+    val allAmNum =
+      Seq("--allamnum", Integer.toString(numYarn+1) )
+
+
+
     if (args.primaryRFile != null && args.primaryRFile.endsWith(".R")) {
       args.userArgs = ArrayBuffer(args.primaryRFile) ++ args.userArgs
     }
@@ -1077,7 +1085,7 @@ private[spark] class Client(
       Seq(amClass) ++ userClass ++ userJar ++ primaryPyFile ++ primaryRFile ++
         userArgs ++ Seq(
         "--properties-file", buildPath(YarnSparkHadoopUtil.expandEnvironment(Environment.PWD),
-          LOCALIZED_CONF_DIR, SPARK_CONF_FILE)) ++ rmHost ++ nmHost
+          LOCALIZED_CONF_DIR, SPARK_CONF_FILE)) ++ rmHost ++ nmHost ++ appName ++ allAmNum
 
     // Command for the ApplicationMaster
     val commands = prefixEnv ++ Seq(

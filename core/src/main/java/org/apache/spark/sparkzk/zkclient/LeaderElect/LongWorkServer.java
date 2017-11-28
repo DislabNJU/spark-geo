@@ -18,39 +18,35 @@ public class LongWorkServer {
     private volatile boolean running = false;
 
     private ZkClient zkClient;
-
     public static final String MasterRootNodeName = "sparkMaster";
-
-
     public static final String MasterRootPath = "/sparkMaster";
-
     public static final String masterNodeName = "master";
-
-    public static final String masterNodePath = "/sparkMaster/master";
-
-
+    public  String masterNodePath = null;
     private RunningData serverData;
-
     private RunningData masterData;
-
-    private int masterSelectorNum = 0;
-
+    private Long masterSelectorNum = Long.valueOf(0);
     private ReentrantLock masterSelectorNumLock = new ReentrantLock();
-
     private IZkDataListener dataListener;
-
     private int takeMasterDelayTime = 3;
+    private String appNodeName;
 
 
-
-    public LongWorkServer(RunningData runningData, ZkClient zkClient, int masterSelectorNum) {
+    public LongWorkServer(RunningData runningData, ZkClient zkClient, String appNodeName, Long masterSelectorNum) {
         running = true;
+        this.serverData = runningData;
+        this.appNodeName = appNodeName;
         setMasterSelectorNum(masterSelectorNum);
         this.zkClient = zkClient;
         if(!this.zkClient.exists(MasterRootPath)){
             zkClient.createPersistent(MasterRootPath);
         }
-        this.serverData = runningData;
+        String appNodePath = MasterRootPath+"/"+appNodeName;
+        if(!this.zkClient.exists(appNodePath)){
+            zkClient.createPersistent(appNodePath);
+        }
+
+        this.masterNodePath = appNodePath+"/"+masterNodeName;
+
         if(!this.zkClient.exists(masterNodePath)){
             zkClient.createEphemeral(masterNodePath,ObTrans.ObjectToBytes(this.serverData));
             masterData = serverData;
@@ -63,7 +59,7 @@ public class LongWorkServer {
         t1.start();
     }
 
-    public void setMasterSelectorNum(int masterSelectorNum){
+    public void setMasterSelectorNum(Long masterSelectorNum){
         masterSelectorNumLock.lock();
         this.masterSelectorNum = masterSelectorNum;
         masterSelectorNumLock.unlock();
@@ -75,6 +71,10 @@ public class LongWorkServer {
 
     public boolean iAmMaster(){
         return serverData.getCid().equals(masterData.getCid());
+    }
+
+    public int masterId(){
+        return Integer.parseInt(masterData.getCid());
     }
 
     private class MonitorMaserNode implements  Runnable{
@@ -108,7 +108,7 @@ public class LongWorkServer {
             while(running){//?
                 zkClient.subscribeDataChanges(masterNodePath,dataListener);
                 try {
-                    Thread.sleep(50);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
@@ -118,7 +118,7 @@ public class LongWorkServer {
 
 
     private void electMaster(){
-        String myElectorClientName = Integer.toString(masterSelectorNum);
+        String myElectorClientName = Long.toString(masterSelectorNum);
         String myElectorClientPath = MasterRootPath+"/"+myElectorClientName;
         zkClient.createEphemeral(myElectorClientPath);
         try {

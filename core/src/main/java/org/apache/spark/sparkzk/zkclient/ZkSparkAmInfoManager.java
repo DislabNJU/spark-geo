@@ -2,26 +2,32 @@ package org.apache.spark.sparkzk.zkclient;
 
 import org.apache.spark.sparkzk.zkclient.common.IZkClient;
 import org.apache.spark.sparkzk.zkclient.common.ZkClient;
+import scala.Int;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class ZkSparkAmInfoManager {
-    public static String infoRootPath = "/sparkNodeInfo";
+    public final static String infoRootPath = "/sparkNodeInfo";
     private IZkClient zk;
     private String myInfoName = "";
-    public ZkSparkAmInfoManager(String zkHostName, String infoName){
-
+    private String appNodeName = "";
+    public ZkSparkAmInfoManager(String zkHostName, String appNodeName, String infoName){
+        this.appNodeName = appNodeName;
         zk = new ZkClient(zkHostName);
         if(!zk.exists(infoRootPath)) {
             zk.createPersistent(infoRootPath);
         }
-        createInfoNode(infoName);
+        if(!zk.exists(appNodeName)) {
+            zk.createPersistent(infoRootPath+"/"+appNodeName);
+        }
+        createInfoNode(infoRootPath+"/"+appNodeName+"/"+infoName);
         myInfoName = infoName;
     }
 
     private void createInfoNode(String clientInfoName){
         if(!zk.exists(clientInfoName)) {
-            zk.createEphemeral(infoRootPath+"/"+clientInfoName);
+            zk.createEphemeral(clientInfoName);
         }
         else{
             System.out.println("create a node: "+clientInfoName+" which has been exit!");
@@ -33,9 +39,11 @@ public class ZkSparkAmInfoManager {
     }
 
     public List<String> getAllNodeName(){
-        List<String> names = zk.getChildren(infoRootPath);
 
+        String path = infoRootPath+"/"+appNodeName;
+        List<String> names = zk.getChildren(path);
         return names;
+
     }
 
     public List<String> getOtherNodeName(){

@@ -17,14 +17,13 @@
 
 package org.apache.spark.util
 
-import java.{lang => jl}
+import java.{util, lang => jl}
 import java.io.ObjectInputStream
 import java.util.{ArrayList, Collections}
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 import scala.collection.JavaConverters._
-
 import org.apache.spark.{InternalAccumulator, SparkContext, TaskContext}
 import org.apache.spark.scheduler.AccumulableInfo
 
@@ -206,9 +205,24 @@ private[spark] object AccumulatorContext {
    * once the RDDs and user-code that reference them are cleaned up.
    * TODO: Don't use a global map; these should be tied to a SparkContext (SPARK-13051).
    */
-  private val originals = new ConcurrentHashMap[Long, jl.ref.WeakReference[AccumulatorV2[_, _]]]
+  private var originals = new ConcurrentHashMap[Long, jl.ref.WeakReference[AccumulatorV2[_, _]]]
 
   private[this] val nextId = new AtomicLong(0L)
+
+
+  private var registerSet = new scala.collection.mutable.HashSet[AccumulatorV2[_, _]]
+
+  def getOriginals(): ConcurrentHashMap[Long, jl.ref.WeakReference[AccumulatorV2[_, _]]] = {
+    originals
+  }
+
+  def setOriginals(o: ConcurrentHashMap[Long, jl.ref.WeakReference[AccumulatorV2[_, _]]]): Unit = {
+    originals = o
+  }
+
+  def getRegisterSet(): scala.collection.mutable.HashSet[AccumulatorV2[_, _]] = {
+    registerSet
+  }
 
   /**
    * Returns a globally unique ID for a new [[AccumulatorV2]].
@@ -231,6 +245,7 @@ private[spark] object AccumulatorContext {
    * of overwriting it. We will never register same accumulator twice, this is just a sanity check.
    */
   def register(a: AccumulatorV2[_, _]): Unit = {
+    registerSet += a
     originals.putIfAbsent(a.id, new jl.ref.WeakReference[AccumulatorV2[_, _]](a))
   }
 

@@ -91,6 +91,7 @@ public class ExternalShuffleClient extends ShuffleClient {
   public void fetchBlocks(
       final String host,
       final int port,
+      final String applicationId,
       final String execId,
       String[] blockIds,
       BlockFetchingListener listener) {
@@ -103,7 +104,7 @@ public class ExternalShuffleClient extends ShuffleClient {
           public void createAndStart(String[] blockIds, BlockFetchingListener listener)
               throws IOException, InterruptedException {
             TransportClient client = clientFactory.createClient(host, port);
-            new OneForOneBlockFetcher(client, appId, execId, blockIds, listener).start();
+            new OneForOneBlockFetcher(client, applicationId, execId, blockIds, listener).start();
           }
         };
 

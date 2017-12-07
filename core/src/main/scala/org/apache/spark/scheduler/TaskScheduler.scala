@@ -96,7 +96,8 @@ private[spark] trait TaskScheduler {
   def applicationAttemptId(): Option[String]
 
   // add by lxb
-  def registerAsFollower(followerId: Int, leaderEndpointRef: RpcEndpointRef): Boolean
+  def registerAsFollower(followerId: Int, leaderEndpointRef: RpcEndpointRef,
+                         leaderUrl: String): Boolean
 
   def sendRemoteEventsToFollowers(epoch: Long,
                                   events: HashMap[Int, HashSet[CompletionEvent]],
@@ -108,4 +109,6 @@ private[spark] trait TaskScheduler {
                                ask: HashSet[Int]): Unit
 
   def getRecoverInfoFromLeader(followerId: Int): RecoverInfo
+
+  def onStageStarted(followerId: Int, jobId: Int, stageId: Int): Unit
 }

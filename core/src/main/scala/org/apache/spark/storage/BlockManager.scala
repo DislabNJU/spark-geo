@@ -160,11 +160,14 @@ private[spark] class BlockManager(
     shuffleClient.init(appId)
 
     blockManagerId = BlockManagerId(
-      executorId, blockTransferService.hostName, blockTransferService.port)
+      executorId, blockTransferService.hostName, blockTransferService.port, appId)
+    logInfo(s"initialize blockManagerId with appId: ${appId}")
+
 
     shuffleServerId = if (externalShuffleServiceEnabled) {
       logInfo(s"external shuffle service port = $externalShuffleServicePort")
-      BlockManagerId(executorId, blockTransferService.hostName, externalShuffleServicePort)
+      logInfo(s"initialize shuffleServerId with appId: ${appId}")
+      BlockManagerId(executorId, blockTransferService.hostName, externalShuffleServicePort, appId)
     } else {
       blockManagerId
     }
@@ -564,7 +567,7 @@ private[spark] class BlockManager(
       logDebug(s"Getting remote block $blockId from $loc")
       val data = try {
         blockTransferService.fetchBlockSync(
-          loc.host, loc.port, loc.executorId, blockId.toString).nioByteBuffer()
+          loc.host, loc.port, loc.executorId, blockId.toString, loc.appId).nioByteBuffer()
       } catch {
         case NonFatal(e) =>
           runningFailureCount += 1

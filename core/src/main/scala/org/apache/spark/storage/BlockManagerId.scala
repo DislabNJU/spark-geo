@@ -37,7 +37,8 @@ import org.apache.spark.util.Utils
 class BlockManagerId private (
     private var executorId_ : String,
     private var host_ : String,
-    private var port_ : Int)
+    private var port_ : Int,
+    private var appId_ : String = "unset")
   extends Externalizable {
 
   private def this() = this(null, null, 0)  // For deserialization only
@@ -60,6 +61,8 @@ class BlockManagerId private (
 
   def port: Int = port_
 
+  def appId : String = appId_
+
   def isDriver: Boolean = {
     executorId == SparkContext.DRIVER_IDENTIFIER ||
       executorId == SparkContext.LEGACY_DRIVER_IDENTIFIER
@@ -69,12 +72,14 @@ class BlockManagerId private (
     out.writeUTF(executorId_)
     out.writeUTF(host_)
     out.writeInt(port_)
+    out.writeUTF(appId_)
   }
 
   override def readExternal(in: ObjectInput): Unit = Utils.tryOrIOException {
     executorId_ = in.readUTF()
     host_ = in.readUTF()
     port_ = in.readInt()
+    appId_ = in.readUTF()
   }
 
   @throws(classOf[IOException])
@@ -103,6 +108,10 @@ private[spark] object BlockManagerId {
    * @param port Port of the block manager.
    * @return A new [[org.apache.spark.storage.BlockManagerId]].
    */
+
+  def apply(execId: String, host: String, port: Int, appId: String): BlockManagerId =
+  getCachedBlockManagerId(new BlockManagerId(execId, host, port, appId))
+
   def apply(execId: String, host: String, port: Int): BlockManagerId =
     getCachedBlockManagerId(new BlockManagerId(execId, host, port))
 

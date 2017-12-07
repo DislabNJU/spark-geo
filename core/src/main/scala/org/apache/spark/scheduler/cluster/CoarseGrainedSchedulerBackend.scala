@@ -32,7 +32,9 @@ import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.scheduler.cluster.CoarseGrainedSchedulerBackend.ENDPOINT_NAME
 import org.apache.spark.util.{RpcUtils, SerializableBuffer, ThreadUtils, Utils}
 
+import scala.collection.mutable
 import scala.util.{Failure, Success}
+
 
 /**
  * A scheduler backend that waits for coarse-grained executors to connect.
@@ -96,7 +98,10 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   // each followers' DriverBackendPoint
   private val followerIdToEndpoint = new HashMap[Int, RpcEndpointRef]
 
-  private var leaderEndpoint: RpcEndpointRef = null
+  // put events in it if the follower is not register yet
+  private val followerIdToEvents = new HashMap[Int, RemoteCompletionEventsFromLeader]
+
+  private var leaderEndpoint: Option[RpcEndpointRef] = None
 
   class DriverEndpoint(override val rpcEnv: RpcEnv, sparkProperties: Seq[(String, String)])
     extends ThreadSafeRpcEndpoint with Logging {
@@ -114,6 +119,9 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     private val reviveThread =
       ThreadUtils.newDaemonSingleThreadScheduledExecutor("driver-revive-thread")
 
+    private var selfStarted = false
+
+
     override def onStart() {
       // Periodically revive offers to allow delay scheduling to work
       val reviveIntervalMs = conf.getTimeAsMs("spark.scheduler.revive.interval", "1s")
@@ -123,6 +131,10 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           Option(self).foreach(_.send(ReviveOffers))
         }
       }, 0, reviveIntervalMs, TimeUnit.MILLISECONDS)
+
+      logInfo("DriverEndpoint start")
+      scheduler.onSchedulerBackendStarted(self)
+      selfStarted = true
     }
 
     override def receive: PartialFunction[Any, Unit] = {
@@ -157,6 +169,9 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
       case RemoteCompletionEventsFromFollower(followerId, epoch, event, ask) =>
         scheduler.handleRemoteEventsFromFollower(followerId, epoch, event, ask)
+
+      case NewStageEvent(followerId, jobId, stageId) =>
+        scheduler.handleNewStageEventFromFollower(followerId, jobId, stageId)
     }
 
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
@@ -223,10 +238,22 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
       case RegisterAsFollower(followerId, followerEndpoint) =>
         followerIdToEndpoint.put(followerId, followerEndpoint)
+        logInfo(s"RegisterAsFollower: follower ${followerId} registered")
         context.reply(true)
 
       case RecoverApplication(followerId) =>
+        logInfo(s"follower ${followerId} ask for recover")
         context.reply(scheduler.handleRecoverApplication(followerId))
+
+      case RegisterAsFollowerInternal(followerId) =>
+        while (!selfStarted) {
+          logInfo("driverEndpoint has not started yet")
+          Thread.sleep(1000)
+        }
+        getLeaderEndpoint().ask[Boolean](RegisterAsFollower(followerId, self))
+        logInfo(s"RegisterAsFollowerInternal")
+        context.reply(true)
+
     }
 
     // Make fake resource offers on all executors
@@ -367,7 +394,8 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     // TODO (prashant) send conf instead of properties
     driverEndpoint = createDriverEndpointRef(properties)
 
-    scheduler.onSchedulerBackendStarted(driverEndpoint)
+    // logInfo("SchedulerBackend start")
+    // scheduler.onSchedulerBackendStarted(driverEndpoint)
   }
 
   protected def createDriverEndpointRef(
@@ -391,32 +419,81 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     }
   }
 
-  def registerAsFollower(followerId: Int, leaderEndpointRef: RpcEndpointRef): Boolean = {
-    var isSuccess = false
-    leaderEndpoint = leaderEndpointRef
-    driverEndpoint.ask(RegisterAsFollower(followerId, driverEndpoint)).onComplete {
+  def registerAsFollower(followerId: Int, leaderEndpointRef: RpcEndpointRef,
+                         leaderUrl: String): Boolean = {
+    logInfo("tring to registerAsFollower")
+    var isSuccess = true
+    // leaderEndpoint = leaderEndpointRef
+
+    logInfo("Connecting to driver: " + leaderUrl)
+    rpcEnv.asyncSetupEndpointRefByURI(leaderUrl).flatMap { ref =>
+      // This is a very fast action so we can use "ThreadUtils.sameThread"
+      leaderEndpoint = Some(ref)
+      driverEndpoint.ask[Boolean](RegisterAsFollowerInternal(followerId))
+    }(ThreadUtils.sameThread).onComplete {
+      // This is a very fast action so we can use "ThreadUtils.sameThread"
+      case Success(msg) =>
+      // Always receive `true`. Just ignore it
+      case Failure(e) =>
+        logInfo("RegisterAsFollowerInternal fail")
+    }(ThreadUtils.sameThread)
+
+    // driverEndpoint.ask[Boolean](RegisterAsFollowerInternal(followerId))
+      /*
+      .onComplete {
       case Success(msg) =>
         logInfo("registerAsFollower success")
         isSuccess = true
       case Failure(e) =>
         logInfo("registerAsFollower failed")
     }
+    */
     isSuccess
   }
 
-  def getLeaderEndpoint(followerId: Int): RpcEndpointRef = {
-    leaderEndpoint
+  def getLeaderEndpoint(): RpcEndpointRef = {
+    leaderEndpoint match {
+      case Some(driverRef) =>
+        driverRef
+      case None =>
+        logInfo("getLeaderEndpoint fail")
+        null
+    }
   }
 
   def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = {
-    getLeaderEndpoint(followerId).askWithRetry[RecoverInfo](RecoverApplication(followerId))
+    getLeaderEndpoint().askWithRetry[RecoverInfo](RecoverApplication(followerId))
+  }
+
+  def sendNewStageEventToLeader(followerId: Int, jobId: Int, stageId: Int): Unit = {
+    // TODO: maybe use askWithRetry
+    getLeaderEndpoint().send(NewStageEvent(followerId, jobId, stageId))
   }
 
   def sendRemoteEventsToFollowers(epoch: Long,
                                   events: HashMap[Int, HashSet[CompletionEvent]],
                                   allEventsIds: HashSet[Int]): Unit = {
     events.foreach{ case(fid, e) =>
-        followerIdToEndpoint(fid).send(RemoteCompletionEventsFromLeader(epoch, e, allEventsIds))
+      if (followerIdToEndpoint.isDefinedAt(fid)) {
+        val eventsToSend = e
+        if (followerIdToEvents.isDefinedAt(fid)) {
+          eventsToSend ++= followerIdToEvents(fid).events
+          followerIdToEvents.remove(fid)
+        }
+        followerIdToEndpoint(fid).send(RemoteCompletionEventsFromLeader(epoch,
+          eventsToSend, allEventsIds))
+      } else {
+        logInfo(s"follower ${fid} has not registered yet")
+        if (followerIdToEvents.isDefinedAt(fid)) {
+          logInfo(s"follower ${fid} has append events to send")
+          followerIdToEvents.update(fid,
+            RemoteCompletionEventsFromLeader(epoch,
+              e ++ followerIdToEvents(fid).events, allEventsIds))
+        } else {
+          followerIdToEvents.put(fid,
+            RemoteCompletionEventsFromLeader(epoch, e, allEventsIds))
+        }
+      }
     }
   }
 
@@ -424,8 +501,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
                                epoch: Long,
                                events: HashSet[CompletionEvent],
                                ask: HashSet[Int]): Unit = {
-    getLeaderEndpoint(followerId)
-      .send(RemoteCompletionEventsFromFollower(followerId, epoch, events, ask))
+    getLeaderEndpoint().send(RemoteCompletionEventsFromFollower(followerId, epoch, events, ask))
   }
 
   override def stop() {

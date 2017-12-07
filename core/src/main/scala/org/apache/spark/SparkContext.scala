@@ -215,6 +215,8 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
   private var _files: Seq[String] = _
   private var _shutdownHookRef: AnyRef = _
 
+  private var _zkClient: DAGSchedulerZKClient = _
+
   /* ------------------------------------------------------------------------------------- *
    | Accessors and public fields. These provide access to the internal state of the        |
    | context.                                                                              |
@@ -222,11 +224,15 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
 
   private[spark] def conf: SparkConf = _conf
 
+  private def zkClient: DAGSchedulerZKClient = _zkClient
+
   /**
    * Return a copy of this SparkContext's configuration. The configuration ''cannot'' be
    * changed at runtime.
    */
   def getConf: SparkConf = conf.clone()
+
+  def getZKClient: DAGSchedulerZKClient = zkClient
 
   def jars: Seq[String] = _jars
   def files: Seq[String] = _files
@@ -484,6 +490,9 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
     // retrieve "HeartbeatReceiver" in the constructor. (SPARK-6640)
     _heartbeatReceiver = env.rpcEnv.setupEndpoint(
       HeartbeatReceiver.ENDPOINT_NAME, new HeartbeatReceiver(this))
+
+    // Create ZKClient
+    _zkClient = new DAGSchedulerZKClient(this)
 
     // Create and start the scheduler
     val (sched, ts) = SparkContext.createTaskScheduler(this, master, deployMode)
@@ -1733,10 +1742,32 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
    */
   def listJars(): Seq[String] = addedJars.keySet.toSeq
 
+  def maybeWaitPartners(): Unit = {
+    logInfo("application complete, wait for partners")
+    zkClient.updateStageInfo(Int.MaxValue, Int.MaxValue)
+    var alright = false
+    while (!alright) {
+      var wait = false
+      val ps = zkClient.getStageInfo()
+      ps.foreach {case(pid, (jId, sId)) =>
+        if (jId != Int.MaxValue) {
+          wait = true
+          logInfo(s"partner ${pid} is not complete yet, jobId: ${jId}, stageId: ${sId}")
+        }
+      }
+      if (wait) {
+        Thread.sleep(1000)
+      } else {
+        alright = true
+      }
+    }
+  }
+
   /**
    * Shut down the SparkContext.
    */
   def stop(): Unit = {
+    maybeWaitPartners()
     if (env.rpcEnv.isInRPCThread) {
       // `stop` will block until all RPC threads exit, so we cannot call stop inside a RPC thread.
       // We should launch a new thread to call `stop` to avoid dead-lock.

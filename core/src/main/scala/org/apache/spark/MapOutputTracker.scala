@@ -202,6 +202,16 @@ private[spark] abstract class MapOutputTracker(conf: SparkConf) extends Logging 
           val fetchedBytes = askTracker[Array[Byte]](GetMapOutputStatuses(shuffleId))
           fetchedStatuses = MapOutputTracker.deserializeMapStatuses(fetchedBytes)
           logInfo("Got the output locations")
+          /*
+          try {
+            fetchedStatuses.foreach { s =>
+              logInfo(s"host: ${s.location.host}")
+            }
+          } catch {
+            case e: NullPointerException =>
+          }
+          */
+
           mapStatuses.put(shuffleId, fetchedStatuses)
         } finally {
           fetching.synchronized {

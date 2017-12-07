@@ -52,6 +52,9 @@ public class LongWorkServer {
             masterData = serverData;
             System.out.println("I am the master!"+"cid: "+serverData.getCid());
 
+        }else{
+            RunningData nowMatserData = (RunningData) ObTrans.BytesToObject(zkClient.readData(masterNodePath,true));
+            masterData = nowMatserData;
         }
 
         MonitorMaserNode monitorMaserNode = new MonitorMaserNode();

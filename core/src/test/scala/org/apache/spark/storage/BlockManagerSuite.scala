@@ -1251,6 +1251,7 @@ class BlockManagerSuite extends SparkFunSuite with Matchers with BeforeAndAfterE
     override def fetchBlocks(
         host: String,
         port: Int,
+        applicationId: String,
         execId: String,
         blockIds: Array[String],
         listener: BlockFetchingListener): Unit = {
@@ -1278,7 +1279,8 @@ class BlockManagerSuite extends SparkFunSuite with Matchers with BeforeAndAfterE
         host: String,
         port: Int,
         execId: String,
-        blockId: String): ManagedBuffer = {
+        blockId: String,
+        applicationId: String = "unset"): ManagedBuffer = {
       numCalls += 1
       if (numCalls <= maxFailures) {
         throw new RuntimeException("Failing block fetch in the mock block transfer service")

@@ -17,24 +17,42 @@
 
 package org.apache.spark.scheduler
 
+import java.lang
+import java.{lang => jl}
+import java.util.concurrent.ConcurrentHashMap
+
 import org.apache.spark.rdd.RDD
 import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.scheduler.ApplicationMasterState.ApplicationMasterState
+import org.apache.spark.util.AccumulatorV2
 
+import scala.collection.mutable
 import scala.collection.mutable.HashMap
 
 /**
  * Created by lxb on 17-11-17.
  */
-class SyncInfo (
-    // val epoch: Long,
-    var jobId: Int,
-    var stageId: Int,
-    var rdd: RDD[_],
-    var partitions: Seq[Int],
-    var partners: HashMap[Int, ClusterInfo]) extends Serializable {
+class SyncInfo () extends Serializable {
 
-  def this() = this(-1, -1, null, Seq.empty, Map.empty)
+  var groupName: String = "default"
+  var jobId: Int = -1
+  var stageId: Int = -1
+  var rdd: RDD[_] = null
+  var partitions: Seq[Int] = Seq.empty
+  var partners: HashMap[Int, org.apache.spark.scheduler.ClusterInfo] = mutable.HashMap.empty
+  var subPartFlag: (Int, Int) = (-1, -1)
+  var stageSeq: mutable.HashMap[Int, Int] = mutable.HashMap.empty
+  var originalsRegisterSet: mutable.HashSet[AccumulatorV2[_, _]] = null
+  var forTest: Seq[Int] = Seq.empty
+
+
+  def addTestNum(n: Int): Unit = synchronized{
+    forTest :+= (n)
+  }
+
+  def setGroup(group: String): Unit = {
+    groupName = group
+  }
 
   def setJobId(id: Int): Unit = {
     jobId = id
@@ -62,13 +80,48 @@ class SyncInfo (
     partners.update(followerId, follower)
   }
 
-  def getLeaderInfo(): (Int, RpcEndpointRef) = {
+  def setSubPartFlag(jobId: Int, stageId: Int): Unit = {
+    subPartFlag = (jobId, stageId)
+  }
+
+  def addStage(stageIdx: Int, stageId: Int): Unit = {
+    stageSeq.put(stageIdx, stageId)
+  }
+
+  def setOriginals(o: mutable.HashSet[AccumulatorV2[_, _]]): Unit = {
+    originalsRegisterSet = o
+  }
+
+  def getLeaderInfo(): (Int, RpcEndpointRef, String) = {
     partners.foreach{ case(id, info) =>
         if (info.appMasterRole == ApplicationMasterRole.LEADER) {
-          return (id, info.endpoint)
+          return (id, info.endpoint, info.driverUrl)
         }
     }
-    (-1, null)
+    (-1, null, "unset")
   }
+
+  def changeLeader(leaderId: Int, driverUrl: String): Unit = {
+    val (oldLeader, endpoint, url) = getLeaderInfo()
+    val info = partners(oldLeader)
+    info.setAppMasterRole(ApplicationMasterRole.FOLLOWER)
+    info.setAppMasterState(ApplicationMasterState.FAILED)
+    partners.update(oldLeader, info)
+
+    val newLeaderInfo = partners(leaderId)
+    newLeaderInfo.setAppMasterRole(ApplicationMasterRole.LEADER)
+    newLeaderInfo.setDriverUrl(driverUrl)
+    partners.update(leaderId, newLeaderInfo)
+  }
+
+  def addPartition(stageId: Int, pid: Int, partition: Seq[Int]): Unit = {
+    val info = partners(pid)
+    info.setSubPartitions(stageId, info.subPartitions(stageId) ++ partition)
+  }
+
+}
+
+private object SyncInfo {
+  val SLOCK = new Object()
 
 }

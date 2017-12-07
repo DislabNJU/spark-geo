@@ -17,6 +17,8 @@
 
 package org.apache.spark.scheduler
 
+import org.apache.spark.internal.Logging
+
 import scala.collection.Map
 import scala.collection.mutable.HashMap
 import scala.util.Random
@@ -24,23 +26,42 @@ import scala.util.Random
 /**
  * Created by lxb on 17-11-21.
  */
-class TaskDistributor {
+class TaskDistributor  extends Logging{
 
-  def distributeTaskByRandom(
+  def distributeTaskByRandom(stageId: Int, tasks: Seq[Task[_]],
       partitionsToCompute: Seq[Int],
       partners: HashMap[Int, ClusterInfo]): HashMap[Int, ClusterInfo] = {
     val livePartners = partners.filter{ case(pid, info) =>
-        info.appMasterState != ApplicationMasterState.RUNNING
+        info.appMasterState == ApplicationMasterState.RUNNING
+    }
+    logInfo(s"partitions size: ${partitionsToCompute.size}, "
+      + s"partners num: ${partners.size}, "
+      + s"alive partners num: ${livePartners.size}")
+    if (livePartners.size == 0) {
+      logInfo("partners all died, but that's impossible")
+      return partners
     }
     val partnersId = livePartners.keySet.toArray
     val subPartitions = partitionsToCompute.groupBy{ p =>
       partnersId((new Random).nextInt(partnersId.length))
     }
 
-    partnersId.foreach{ pid: =>
+    partnersId.foreach{ pid =>
       val cInfo = partners(pid)
-      cInfo.setSubPartitions(subPartitions(pid))
-      partners.update(pid, cInfo)
+      if (subPartitions.isDefinedAt(pid)) {
+        cInfo.setSubPartitions(stageId, subPartitions(pid))
+        if (tasks != null) {
+          val st = tasks.filter{t => subPartitions(pid).contains(t.partitionId)}
+          cInfo.setSubtasks(stageId, st)
+        }
+        partners.update(pid, cInfo)
+        logInfo(s"partner ${pid} got partitions: ${subPartitions(pid).toString()}")
+      } else {
+        cInfo.setSubPartitions(stageId, Seq.empty)
+        cInfo.setSubtasks(stageId, Seq.empty)
+        partners.update(pid, cInfo)
+        logInfo(s"partner ${pid} got partitions: empty")
+      }
     }
 
     partners

@@ -166,7 +166,10 @@ final class ShuffleBlockFetcherIterator(
     val blockIds = req.blocks.map(_._1.toString)
 
     val address = req.address
-    shuffleClient.fetchBlocks(address.host, address.port, address.executorId, blockIds.toArray,
+    logInfo(s"fetchBlocks, " +
+      s"address host: ${address.host}, address executorId: ${address.executorId}")
+    shuffleClient.fetchBlocks(address.host, address.port, address.appId,
+      address.executorId, blockIds.toArray,
       new BlockFetchingListener {
         override def onBlockFetchSuccess(blockId: String, buf: ManagedBuffer): Unit = {
           // Only add the buffer to results queue if the iterator is not zombie,
@@ -208,7 +211,14 @@ final class ShuffleBlockFetcherIterator(
     var totalBlocks = 0
     for ((address, blockInfos) <- blocksByAddress) {
       totalBlocks += blockInfos.size
-      if (address.executorId == blockManager.blockManagerId.executorId) {
+      /*
+      logInfo(s"address.appId ${address.appId}, " +
+        s"address.executorId: ${address.executorId}, " +
+        s"blockManagerId.appId: ${blockManager.blockManagerId.appId}, " +
+        s"blockManagerId.executorId: ${blockManager.blockManagerId.executorId}")
+        */
+      if (address.appId == blockManager.blockManagerId.appId
+        && address.executorId == blockManager.blockManagerId.executorId ) {
         // Filter out zero-sized blocks
         localBlocks ++= blockInfos.filter(_._2 != 0).map(_._1)
         numBlocksToFetch += localBlocks.size

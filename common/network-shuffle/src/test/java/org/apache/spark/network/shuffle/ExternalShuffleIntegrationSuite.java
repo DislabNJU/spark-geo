@@ -130,7 +130,7 @@ public class ExternalShuffleIntegrationSuite {
 
     ExternalShuffleClient client = new ExternalShuffleClient(conf, null, false, false);
     client.init(APP_ID);
-    client.fetchBlocks(TestUtils.getLocalHost(), port, execId, blockIds,
+    client.fetchBlocks(TestUtils.getLocalHost(), port, "unset",execId, blockIds,
       new BlockFetchingListener() {
         @Override
         public void onBlockFetchSuccess(String blockId, ManagedBuffer data) {

@@ -72,7 +72,8 @@ private class DummyTaskScheduler extends TaskScheduler {
 
   override def submitTasksAdditional(taskSetName: String, taskSet: TaskSet): Unit = {}
   override def registerAsFollower(followerId: Int,
-                                  leaderEndpointRef: RpcEndpointRef): Boolean = true
+                                  leaderEndpointRef: RpcEndpointRef,
+                                  leaderUrl: String): Boolean = true
   override def sendRemoteEventsToFollowers(
       epoch: Long,
       events: HashMap[Int, HashSet[CompletionEvent]],
@@ -82,6 +83,8 @@ private class DummyTaskScheduler extends TaskScheduler {
                                         events: HashSet[CompletionEvent],
                                           ask: HashSet[Int]): Unit = {}
   override def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = null
+
+  override def onStageStarted(followerId: Int, jobId: Int, stageId: Int): Unit = {}
 
   def executorHeartbeatReceived(
       execId: String,

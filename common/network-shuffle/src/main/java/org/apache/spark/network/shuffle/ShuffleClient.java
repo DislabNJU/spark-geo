@@ -38,6 +38,7 @@ public abstract class ShuffleClient implements Closeable {
   public abstract void fetchBlocks(
       String host,
       int port,
+      String applicationId,
       String execId,
       String[] blockIds,
       BlockFetchingListener listener);

@@ -129,6 +129,8 @@ private[spark] class Client(
 
   private var appId: ApplicationId = null
 
+  private var groupName = "unset"
+
   // The app staging dir based on the STAGING_DIR configuration if configured
   // otherwise based on the users home directory.
   private val appStagingBaseDir = sparkConf.get(STAGING_DIR).map { new Path(_) }
@@ -177,7 +179,7 @@ private[spark] class Client(
       appId = newAppResponse.getApplicationId()
       reportLauncherState(SparkAppHandle.State.SUBMITTED)
       launcherBackend.setAppId(appId.toString)
-
+      groupName = appId.toString
       // Verify whether the cluster has enough resources for our AM
       verifyClusterResources(newAppResponse)
 
@@ -1065,7 +1067,9 @@ private[spark] class Client(
 
 
     val appName =
-      Seq("--appname", appId.toString)
+      Seq("--appname", groupName)
+
+
 
     val allAmNum =
       Seq("--allamnum", Integer.toString(numYarn+1) )

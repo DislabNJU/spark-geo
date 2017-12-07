@@ -86,6 +86,7 @@ private[spark] class NettyBlockTransferService(
   override def fetchBlocks(
       host: String,
       port: Int,
+      applicationId: String,
       execId: String,
       blockIds: Array[String],
       listener: BlockFetchingListener): Unit = {
@@ -94,7 +95,7 @@ private[spark] class NettyBlockTransferService(
       val blockFetchStarter = new RetryingBlockFetcher.BlockFetchStarter {
         override def createAndStart(blockIds: Array[String], listener: BlockFetchingListener) {
           val client = clientFactory.createClient(host, port)
-          new OneForOneBlockFetcher(client, appId, execId, blockIds.toArray, listener).start()
+          new OneForOneBlockFetcher(client, applicationId, execId, blockIds.toArray, listener).start()
         }
       }
 

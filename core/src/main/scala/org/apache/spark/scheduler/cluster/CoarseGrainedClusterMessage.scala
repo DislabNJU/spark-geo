@@ -123,7 +123,13 @@ private[spark] object CoarseGrainedClusterMessages {
   case class RegisterAsFollower(followerId: Int, followerEndpoint: RpcEndpointRef)
     extends CoarseGrainedClusterMessage
 
+  case class RegisterAsFollowerInternal(followerId: Int)
+    extends CoarseGrainedClusterMessage
+
   case class RecoverApplication(followerId: Int)
+    extends CoarseGrainedClusterMessage
+
+  case class NewStageEvent(followerId: Int, jobId: Int, stageId: Int)
     extends CoarseGrainedClusterMessage
 
 }

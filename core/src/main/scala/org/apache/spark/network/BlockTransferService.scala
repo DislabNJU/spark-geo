@@ -65,6 +65,7 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
   override def fetchBlocks(
       host: String,
       port: Int,
+      applicationId: String,
       execId: String,
       blockIds: Array[String],
       listener: BlockFetchingListener): Unit
@@ -86,10 +87,11 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
    *
    * It is also only available after [[init]] is invoked.
    */
-  def fetchBlockSync(host: String, port: Int, execId: String, blockId: String): ManagedBuffer = {
+  def fetchBlockSync(host: String, port: Int, execId: String, blockId: String,
+                     applicationId: String = "unset"): ManagedBuffer = {
     // A monitor for the thread to wait on.
     val result = Promise[ManagedBuffer]()
-    fetchBlocks(host, port, execId, Array(blockId),
+    fetchBlocks(host, port, applicationId, execId, Array(blockId),
       new BlockFetchingListener {
         override def onBlockFetchFailure(blockId: String, exception: Throwable): Unit = {
           result.failure(exception)

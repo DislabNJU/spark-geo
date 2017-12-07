@@ -207,7 +207,7 @@ private[spark] class TaskSchedulerImpl(
     this.synchronized {
       val manager = createTaskSetManager(taskSet, maxTaskFailures)
       manager.name += taskSetName
-
+      logInfo(s"additional taskset name: ${taskSetName}")
       schedulableBuilder.addTaskSetManager(manager, manager.taskSet.properties)
 
       if (!isLocal && !hasReceivedTask) {
@@ -483,21 +483,38 @@ private[spark] class TaskSchedulerImpl(
     dagScheduler.onSchedulerBackendStarted(endpointRef)
   }
 
-  def registerAsFollower(followerId: Int, leaderEndpointRef: RpcEndpointRef): Boolean = {
+  override def registerAsFollower(followerId: Int, leaderEndpointRef: RpcEndpointRef,
+                                  leaderUrl: String): Boolean = {
     backend match {
       case b: CoarseGrainedSchedulerBackend =>
-        b.registerAsFollower(followerId, leaderEndpointRef)
+        b.registerAsFollower(followerId, leaderEndpointRef, leaderUrl)
       case _ =>
+        logInfo("registerAsFollower by wrong backend")
+        false
     }
   }
 
-  def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = {
+  override def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = {
     backend match {
       case b: CoarseGrainedSchedulerBackend =>
         b.getRecoverInfoFromLeader(followerId)
       case _ =>
+        logInfo("getRecoverInfoFromLeader by wrong backend")
         null
     }
+  }
+
+  override def onStageStarted(followerId: Int, jobId: Int, stageId: Int): Unit = {
+    backend match {
+      case b: CoarseGrainedSchedulerBackend =>
+        b.sendNewStageEventToLeader(followerId, jobId, stageId)
+      case _ =>
+        logInfo("onStageStarted by wrong backend")
+    }
+  }
+
+  def handleNewStageEventFromFollower(followerId: Int, jobId: Int, stageId: Int): Unit = {
+    dagScheduler.handleNewStageEventFromFollower(followerId, jobId, stageId)
   }
 
   def handleRecoverApplication(followerId: Int): RecoverInfo = {
@@ -536,7 +553,7 @@ private[spark] class TaskSchedulerImpl(
       case b: CoarseGrainedSchedulerBackend =>
         b.sendRemoteEventsToLeader(followerId, epoch, events, ask)
       case _ =>
-        logInfo("sendRemoteEventsToFollowers by wrong backend")
+        logInfo("sendRemoteEventsToLeader by wrong backend")
     }
   }
 

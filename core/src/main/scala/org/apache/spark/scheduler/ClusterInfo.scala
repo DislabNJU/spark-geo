@@ -21,23 +21,30 @@ import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.scheduler.ApplicationMasterRole.ApplicationMasterRole
 import org.apache.spark.scheduler.ApplicationMasterState.ApplicationMasterState
 
+import scala.collection.mutable
+
 
 /**
  * Created by lxb on 17-11-20.
  */
 class ClusterInfo (
-    var clusterId: String,
+    var clusterId: Int,
     // var rmHost: String,
-    // var nameNodeHost: String,
+    var driverUrl: String,
     var endpoint: RpcEndpointRef,
     var appMasterRole: ApplicationMasterRole,
     var appMasterState: ApplicationMasterState,
-    var subPartitions: Seq[Int]) extends Serializable {
+    var subPartitions: mutable.HashMap[Int, Seq[Int]],
+    var subTasks: mutable.HashMap[Int, Seq[Task[_]]]) extends Serializable {
 
-  def this() = this(-1, null, null, null, Seq.empty)
+  def this() = this(-1, "unset", null, null, null, mutable.HashMap.empty, mutable.HashMap.empty)
 
-  def setClusterId(id: String): Unit = {
+  def setClusterId(id: Int): Unit = {
     clusterId = id
+  }
+
+  def setDriverUrl(url: String): Unit = {
+    driverUrl = url
   }
 
   /*
@@ -62,8 +69,12 @@ class ClusterInfo (
     appMasterState = state
   }
 
-  def setSubPartitions(p: Seq[Int]): Unit = {
-    subPartitions = p
+  def setSubPartitions(stageId: Int, p: Seq[Int]): Unit = {
+    subPartitions(stageId) = p
+  }
+
+  def setSubtasks(stageId: Int, t: Seq[Task[_]]): Unit = {
+    subTasks(stageId) = t
   }
 
 }

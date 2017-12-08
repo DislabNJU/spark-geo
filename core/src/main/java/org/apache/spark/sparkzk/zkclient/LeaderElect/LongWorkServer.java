@@ -1,15 +1,16 @@
 package org.apache.spark.sparkzk.zkclient.LeaderElect;
 
-import org.apache.spark.sparkzk.zkclient.common.IZkDataListener;
-import org.apache.spark.sparkzk.zkclient.common.ZkClient;
-import org.apache.spark.sparkzk.zkclient.common.exception.ZkNodeExistsException;
-import org.apache.spark.sparkzk.zkclient.common.serializer.ObTrans;
-
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
+
+import org.apache.spark.sparkzk.zkclient.common.IZkDataListener;
+import org.apache.spark.sparkzk.zkclient.common.ZkClient;
+import org.apache.spark.sparkzk.zkclient.common.exception.ZkNodeExistsException;
+import org.apache.spark.sparkzk.zkclient.common.serializer.ObTrans;
+
 
 /**
  *
@@ -21,7 +22,8 @@ public class LongWorkServer {
     public static final String MasterRootNodeName = "sparkMaster";
     public static final String MasterRootPath = "/sparkMaster";
     public static final String masterNodeName = "master";
-    public  String masterNodePath = null;
+    public  String masterNodePath = null;//MasterRootPath+app+master
+    public String nodePath = null;//MasterRootPath+app
     private RunningData serverData;
     private RunningData masterData;
     private Long masterSelectorNum = Long.valueOf(0);
@@ -41,6 +43,7 @@ public class LongWorkServer {
             zkClient.createPersistent(MasterRootPath);
         }
         String appNodePath = MasterRootPath+"/"+appNodeName;
+        this.nodePath = appNodePath;
         if(!this.zkClient.exists(appNodePath)){
             zkClient.createPersistent(appNodePath);
         }
@@ -84,7 +87,7 @@ public class LongWorkServer {
 
         @Override
         public void run() {
-                dataListener = new IZkDataListener() {
+            dataListener = new IZkDataListener() {
                 @Override
                 public void handleDataChange(String s, byte[] data) throws Exception {
 
@@ -93,7 +96,7 @@ public class LongWorkServer {
                 @Override
                 public void handleDataDeleted(String s) throws Exception {
                     //takeMaster();
-                    //若之前master为本机,则立即抢主,否则延迟5秒抢主(防止小故障引起的抢主可能导致的网络数据风暴)
+                    //若之前master为本机,则立即抢主,否则延迟抢主(防止小故障引起的抢主可能导致的网络数据风暴)
                     if(masterData != null && masterData.getCid().equals(serverData.getCid())){
                         zkClient.createEphemeral(masterNodePath,ObTrans.ObjectToBytes(serverData));
                         masterData = serverData;
@@ -121,15 +124,15 @@ public class LongWorkServer {
 
 
     private void electMaster(){
-        String myElectorClientName = Long.toString(masterSelectorNum);
-        String myElectorClientPath = MasterRootPath+"/"+myElectorClientName;
-        zkClient.createEphemeral(myElectorClientPath);
+        String myElectorClientNum = Long.toString(masterSelectorNum);
+        String myElectorClientPath = nodePath+"/"+myElectorClientNum;
+        zkClient.createEphemeral(myElectorClientPath,ObTrans.ObjectToBytes(this.serverData));
         try {
             TimeUnit.SECONDS.sleep(3);//wait for the other client to go in
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        List<String> rootMasterChildren = zkClient.getChildren(MasterRootPath);
+        List<String> rootMasterChildren = zkClient.getChildren(nodePath);
         Collections.sort(rootMasterChildren, new Comparator<String>() {
             @Override
             public int compare(String o1, String o2) {
@@ -138,7 +141,24 @@ public class LongWorkServer {
             }
         });
 
-        if(rootMasterChildren.get(0).equals(myElectorClientName)){
+        System.out.println(rootMasterChildren);
+        System.out.println("My cid: "+serverData.getCid());
+
+        if(rootMasterChildren.contains(masterNodeName)){
+            RunningData runningData = (RunningData) ObTrans.BytesToObject(zkClient.readData(masterNodePath,true));
+            zkClient.delete(myElectorClientPath);
+            if(runningData == null){//读取主节点时,主节点被释放
+                electMaster();
+            }else{
+                System.out.println("my name is "+serverData.getCid());
+                masterData = runningData;
+                System.out.println(masterData.getCid()+" is master");
+            }
+            return;
+        }
+
+
+        if(rootMasterChildren.get(0).equals(myElectorClientNum)){
 
             try {
                 zkClient.createEphemeral(masterNodePath, ObTrans.ObjectToBytes(this.serverData));
@@ -180,4 +200,5 @@ public class LongWorkServer {
 
     }
 }
+
 

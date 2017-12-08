@@ -11,6 +11,9 @@ public class ObTrans {
     //byte to object
     public static Object BytesToObject(byte[] bytes) {
         Object obj = null;
+        if(bytes == null){
+            return null;
+        }
         try {
             ByteArrayInputStream bis = new ByteArrayInputStream (bytes);
             ObjectInputStream ois = new ObjectInputStream (bis);
@@ -27,6 +30,9 @@ public class ObTrans {
     //object to byte
     public static byte[] ObjectToBytes(Object obj) {
         byte[] bytes = null;
+        if(obj ==null){
+            return null;
+        }
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         try {
             ObjectOutputStream oos = new ObjectOutputStream(bos);

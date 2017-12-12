@@ -17,9 +17,8 @@
 
 package org.apache.spark.deploy.yarn
 
-import java.io.{ByteArrayInputStream, DataInputStream, File, FileOutputStream, IOException,
-  OutputStreamWriter}
-import java.net.{InetAddress, UnknownHostException, URI}
+import java.io.{ByteArrayInputStream, DataInputStream, File, FileOutputStream, IOException, OutputStreamWriter}
+import java.net.{InetAddress, URI, UnknownHostException}
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.{Properties, UUID}
@@ -29,7 +28,6 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, ListBuffer, Map}
 import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
-
 import com.google.common.base.Objects
 import com.google.common.io.Files
 import org.apache.hadoop.conf.Configuration
@@ -48,13 +46,13 @@ import org.apache.hadoop.yarn.client.api.{YarnClient, YarnClientApplication}
 import org.apache.hadoop.yarn.conf.YarnConfiguration
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException
 import org.apache.hadoop.yarn.util.Records
-
 import org.apache.spark.{SecurityManager, SparkConf, SparkContext, SparkException}
 import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.deploy.yarn.config._
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config._
 import org.apache.spark.launcher.{LauncherBackend, SparkAppHandle, YarnCommandBuilderUtils}
+import org.apache.spark.sparkzk.zkclient.ZkSparkDataClient
 import org.apache.spark.util.Utils
 
 private[spark] class Client(
@@ -129,6 +127,8 @@ private[spark] class Client(
 
   private var appId: ApplicationId = null
 
+  private var groupName = "unset"
+
   // The app staging dir based on the STAGING_DIR configuration if configured
   // otherwise based on the users home directory.
   private val appStagingBaseDir = sparkConf.get(STAGING_DIR).map { new Path(_) }
@@ -177,7 +177,7 @@ private[spark] class Client(
       appId = newAppResponse.getApplicationId()
       reportLauncherState(SparkAppHandle.State.SUBMITTED)
       launcherBackend.setAppId(appId.toString)
-
+      groupName = appId.toString
       // Verify whether the cluster has enough resources for our AM
       verifyClusterResources(newAppResponse)
 
@@ -927,9 +927,9 @@ private[spark] class Client(
     * This sets up the launch environment, java options, and the command for launching the AM.
     */
   private def createContainerLaunchContext(
-                                          nameNodeHost: String,
+                                            nameNodeHost: String,
                                             myYarnConf: Configuration,
-                                           newAppResponse: GetNewApplicationResponse)
+                                            newAppResponse: GetNewApplicationResponse)
   : ContainerLaunchContext = {
     logInfo("Setting up container launch context for our AM")
     val appId = newAppResponse.getApplicationId
@@ -1055,7 +1055,7 @@ private[spark] class Client(
     //add am correct host
     //
     val rmHost =
-      Seq("--rmhost", myYarnConf.get("yarn.resourcemanager.hostname"))
+    Seq("--rmhost", myYarnConf.get("yarn.resourcemanager.hostname"))
 
 
     //add namenode host
@@ -1065,7 +1065,9 @@ private[spark] class Client(
 
 
     val appName =
-      Seq("--appname", appId.toString)
+      Seq("--appname", groupName)
+
+
 
     val allAmNum =
       Seq("--allamnum", Integer.toString(numYarn+1) )

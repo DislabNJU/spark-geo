@@ -187,6 +187,14 @@ private[spark] class ApplicationMaster(
 
   final def run(): Int = {
     try {
+      /*
+       * test run recovery am
+       */
+      val noUse = new Array[String](2)
+      RecoveryAm.main(noUse)
+
+
+
       val appAttemptId = client.getAttemptId()
 
       logInfo("init conf 3")

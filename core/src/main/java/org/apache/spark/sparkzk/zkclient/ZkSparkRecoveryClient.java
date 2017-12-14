@@ -8,11 +8,10 @@ import org.apache.spark.sparkzk.zkclient.common.ZkClient;
 public class ZkSparkRecoveryClient {
     public static String dataRootPath = "/sparkRecovery";
     private IZkClient zk;
-    private byte[] dataBuffer = null;
     private IZkDataListener IzkDL;
     private String myDataPath = null;
     private String myNodeName = null;
-    public ZkSparkRecoveryClient(String hostName, String appNodeName, byte[] buffer){
+    public ZkSparkRecoveryClient(String hostName, String appNodeName){
         myNodeName = appNodeName;
         String path = dataRootPath+"/"+appNodeName;
         myDataPath = path;
@@ -28,10 +27,6 @@ public class ZkSparkRecoveryClient {
         else{
             System.out.println("create a node: "+path+" which has been exit!");
         }
-
-
-        this.dataBuffer = buffer;
-        putData(dataBuffer);
     }
 
     public String  getAppDataNodeName(){
@@ -48,6 +43,6 @@ public class ZkSparkRecoveryClient {
     }
 
     public byte[] getData(){
-        return this.dataBuffer;
+        return zk.readData(myDataPath);
     }
 }

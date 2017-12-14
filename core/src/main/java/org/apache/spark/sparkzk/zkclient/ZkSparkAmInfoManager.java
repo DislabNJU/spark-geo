@@ -26,7 +26,7 @@ public class ZkSparkAmInfoManager {
 
         this.nodeData = new AmNodeData();
         this.appNodeName = appNodeName;
-        zk = new ZkClient(zkHostName);
+        zk = new ZkClient(zkHostName,3000,3000);
 
         this.appNodePath = infoRootPath+"/"+appNodeName;
         if(!zk.exists(infoRootPath)) {

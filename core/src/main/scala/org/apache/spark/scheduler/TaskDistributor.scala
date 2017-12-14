@@ -27,44 +27,83 @@ import scala.util.Random
  * Created by lxb on 17-11-21.
  */
 class TaskDistributor  extends Logging{
+  private val distributeMode = DistributeMode.RANDOM
 
-  def distributeTaskByRandom(stageId: Int, tasks: Seq[Task[_]],
+  def distributeTask(stageId: Int,
       partitionsToCompute: Seq[Int],
       partners: HashMap[Int, ClusterInfo]): HashMap[Int, ClusterInfo] = {
-    val livePartners = partners.filter{ case(pid, info) =>
+    val alivePartners = partners.filter{ case(pid, info) =>
         info.appMasterState == ApplicationMasterState.RUNNING
     }
     logInfo(s"partitions size: ${partitionsToCompute.size}, "
       + s"partners num: ${partners.size}, "
-      + s"alive partners num: ${livePartners.size}")
-    if (livePartners.size == 0) {
+      + s"alive partners num: ${alivePartners.size}")
+    if (alivePartners.size == 0) {
       logInfo("partners all died, but that's impossible")
       return partners
     }
-    val partnersId = livePartners.keySet.toArray
+
+    /*
+    val partnersId = alivePartners.keySet.toArray
     val subPartitions = partitionsToCompute.groupBy{ p =>
       partnersId((new Random).nextInt(partnersId.length))
     }
+    */
+    val subPartitions = applyDistributeMode(partitionsToCompute, alivePartners)
 
-    partnersId.foreach{ pid =>
-      val cInfo = partners(pid)
+    alivePartners.foreach{ case (pid, cInfo) =>
       if (subPartitions.isDefinedAt(pid)) {
         cInfo.setSubPartitions(stageId, subPartitions(pid))
+        /*
         if (tasks != null) {
           val st = tasks.filter{t => subPartitions(pid).contains(t.partitionId)}
           cInfo.setSubtasks(stageId, st)
         }
+        */
         partners.update(pid, cInfo)
         logInfo(s"partner ${pid} got partitions: ${subPartitions(pid).toString()}")
       } else {
         cInfo.setSubPartitions(stageId, Seq.empty)
-        cInfo.setSubtasks(stageId, Seq.empty)
+        // cInfo.setSubtasks(stageId, Seq.empty)
         partners.update(pid, cInfo)
         logInfo(s"partner ${pid} got partitions: empty")
       }
     }
 
+    val failedPartners = partners.filter{ case(pid, info) =>
+      info.appMasterState != ApplicationMasterState.RUNNING
+    }
+    failedPartners.foreach {case(pid, cInfo) =>
+      cInfo.setSubPartitions(stageId, Seq.empty)
+      partners.update(pid, cInfo)
+    }
+
+
     partners
   }
 
+  private def applyDistributeMode(partitionsToCompute: Seq[Int],
+                                  alivePartners: HashMap[Int, ClusterInfo]): Map[Int, Seq[Int]] = {
+    distributeMode match {
+      case DistributeMode.RANDOM =>
+        randomMode(partitionsToCompute, alivePartners)
+    }
+
+  }
+
+  private def randomMode(partitionsToCompute: Seq[Int],
+                         alivePartners: HashMap[Int, ClusterInfo]): Map[Int, Seq[Int]] = {
+    logInfo("distribute by random")
+    val partnersId = alivePartners.keySet.toArray
+    partitionsToCompute.groupBy{ p =>
+      partnersId((new Random).nextInt(partnersId.length))
+    }
+  }
+
+}
+
+object DistributeMode extends Enumeration {
+
+  type DistributeMode = Value
+  val RANDOM, LOCALITY = Value
 }

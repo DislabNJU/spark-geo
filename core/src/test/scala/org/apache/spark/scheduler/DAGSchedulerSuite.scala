@@ -135,11 +135,11 @@ class DAGSchedulerSuite extends SparkFunSuite with LocalSparkContext with Timeou
     override def sendRemoteEventsToFollowers(
         epoch: Long,
         events: HashMap[Int, HashSet[CompletionEvent]],
-        allEventsIds: HashSet[Int]): Unit = {}
+        allEventsIds: HashSet[(Int, Int)]): Unit = {}
     override def sendRemoteEventsToLeader(followerId: Int,
                                           epoch: Long,
                                           events: HashSet[CompletionEvent],
-                                          ask: HashSet[Int]): Unit = {}
+                                          ask: HashSet[(Int, Int)]): Unit = {}
     override def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = null
 
     override def onStageStarted(followerId: Int, jobId: Int, stageId: Int): Unit = {}
@@ -567,11 +567,11 @@ class DAGSchedulerSuite extends SparkFunSuite with LocalSparkContext with Timeou
       override def sendRemoteEventsToFollowers(
           epoch: Long,
           events: HashMap[Int, HashSet[CompletionEvent]],
-          allEventsIds: HashSet[Int]): Unit = {}
+          allEventsIds: HashSet[(Int, Int)]): Unit = {}
       override def sendRemoteEventsToLeader(followerId: Int,
                                             epoch: Long,
                                             events: HashSet[CompletionEvent],
-                                            ask: HashSet[Int]): Unit = {}
+                                            ask: HashSet[(Int, Int)]): Unit = {}
       override def getRecoverInfoFromLeader(followerId: Int): RecoverInfo = null
       override def onStageStarted(followerId: Int, jobId: Int, stageId: Int): Unit = {}
     }

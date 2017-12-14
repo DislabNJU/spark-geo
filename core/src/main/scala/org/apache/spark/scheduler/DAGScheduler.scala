@@ -17,7 +17,8 @@
 
 package org.apache.spark.scheduler
 
-import java.io.NotSerializableException
+import java.io.{IOException, NotSerializableException}
+import java.net.ConnectException
 import java.util.Properties
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -239,10 +240,10 @@ class DAGScheduler(
   protected val historyEventsLock = new AnyRef
 
   // followerId to eventsIds
-  private val askFromFollower = new mutable.HashMap[Int, HashSet[Int]]
+  private val askFromFollower = new mutable.HashMap[Int, HashSet[(Int, Int)]]
 
   // follower ask leader for some events
-  private val askList = new HashSet[Int]
+  private val askList = new HashSet[(Int, Int)]
 
   protected val askListLock = new AnyRef
 
@@ -272,6 +273,8 @@ class DAGScheduler(
   protected val stageLock = new AnyRef
 
   protected val submitTaskLock = new AnyRef
+
+  protected val leaderChangeLock = new AnyRef
 
   private var stageIdx = 1
 
@@ -305,21 +308,35 @@ class DAGScheduler(
   protected val originalsLock = new AnyRef
 
   private var testNum = 1
+  private val testLock = AnyRef
+
   private val testMap = new mutable.HashMap[Long, mutable.HashSet[Int]]
   testMap.getOrElseUpdate(1, new mutable.HashSet[Int]) += 1
   logInfo(s"testNum: ${testMap}")
-  val tm = testMap.getOrElseUpdate(1, new mutable.HashSet[Int])
-  tm += 2
-  logInfo(s"testNum: ${testMap}")
-  testMap.getOrElseUpdate(1, new mutable.HashSet[Int]) += 3
-  logInfo(s"testNum: ${testMap}")
-  logInfo(s"testNum clone: ${testMap.clone()}")
+  testLock.synchronized {
+    val tm = testMap.getOrElseUpdate(1, new mutable.HashSet[Int])
+    tm += 2
+    logInfo(s"testNum: ${testMap}")
+    testLock.synchronized {
+      testMap.getOrElseUpdate(1, new mutable.HashSet[Int]) += 3
+      logInfo(s"testNum: ${testMap}")
+    }
+    logInfo(s"testNum clone: ${testMap.clone()}")
+  }
+
+  private val testSet = new HashSet[Int]
+  testSet += 1
+  var testSetCopy = testSet
+  testSetCopy += 2
+  logInfo(s"testSet: $testSet")
 
   logInfo("DAGScheduler started")
 
   // send remote events
   private val sendRemoteEvents =
   ThreadUtils.newDaemonSingleThreadScheduledExecutor("spark-sendRemoteEvents")
+
+  private val sendEventInterval = sc.getConf.getInt("spark.sendinterval.ms", 6000)
 
   def startSendRemoteEvents(): Unit = {
 
@@ -375,18 +392,29 @@ class DAGScheduler(
       }
     }
     logInfo("startSendRemoteEvents")
-    sendRemoteEvents.scheduleWithFixedDelay(sendEvents, 0, 3000, TimeUnit.MILLISECONDS)
+    sendRemoteEvents.scheduleWithFixedDelay(sendEvents, 0, sendEventInterval, TimeUnit.MILLISECONDS)
 
   }
 
-  def onLeaderChanged(): Unit = {
+  def onLeaderChanged(): Unit = leaderChangeLock.synchronized{
+    logInfo("in leaderChangeLock onleaderchange")
+    getSyncInfo(true)
     val oldLeader = leaderId
     leaderId = zkClient.getLeader()
-    isLeader == zkClient.isLeader()
+    isLeader = zkClient.isLeader()
     logInfo(s"leader changed, old leader: ${oldLeader}, " + s"new leader: ${leaderId}")
     if (isLeader) {
       logInfo(s"become leader, id: ${id}")
-      alivePartners = zkClient.getPartners()
+
+      alivePartners.synchronized {
+        // TODO: zkClient.getPartners() has bug
+        alivePartners = zkClient.getPartners()
+        logInfo(s"alivePartners: $alivePartners")
+        if (alivePartners.contains(oldLeader)) {
+          alivePartners.remove(oldLeader)
+          logInfo(s"alivePartners: $alivePartners")
+        }
+      }
       syncInfoLock.synchronized {
         syncInfo.changeLeader(leaderId, driverUrl)
         zkClient.updateSyncInfo(syncInfo)
@@ -410,27 +438,58 @@ class DAGScheduler(
       logInfo(s"registerAsFollower to new leader: ${lId}")
       registerAsFollower(lId, sInfo.getLeaderInfo()._2, sInfo.getLeaderInfo()._3)
     }
+    logInfo("out leaderChangeLock onleaderchange")
   }
 
   def onFollowerStateChanged(newAlivePartners: mutable.HashSet[Int],
                              oldAlivePartners: mutable.HashSet[Int]): Unit = {
-    logInfo("follower state changed")
+    logInfo("follower state changed, " +
+      s"oldAlivePartners: $oldAlivePartners, newAlivePartners: $newAlivePartners")
     if(!newAlivePartners.diff(oldAlivePartners).isEmpty) {
       // TODO: new partner back to alive
       logInfo("partners back to alive")
+      val recoverPartner = newAlivePartners.diff(oldAlivePartners)
+      var unHandlePartners = recoverPartner
+      syncInfoLock.synchronized {
+        recoverPartner.foreach {pid =>
+          if (syncInfo.partners(pid).appMasterState != ApplicationMasterState.FAILED) {
+            unHandlePartners -= pid
+          } else {
+            syncInfo.setFollowerState(pid, ApplicationMasterState.RECOVERING)
+          }
+        }
+        if (!unHandlePartners.isEmpty) {
+          zkClient.updateSyncInfo(syncInfo)
+        }
+      }
+      if (!unHandlePartners.isEmpty) {
+        handlePartnersRecover(unHandlePartners)
+      }
 
     } else if (!oldAlivePartners.diff(newAlivePartners).isEmpty) {
       val failedPartners = oldAlivePartners.diff(newAlivePartners)
+      var unHandlePartners = failedPartners
       logInfo(s"partner failed: ${failedPartners.toString()}")
       syncInfoLock.synchronized {
         failedPartners.foreach{ pid =>
-          syncInfo.setFollowerState(pid, ApplicationMasterState.FAILED)
-          logInfo(s"set follower ${pid} as failed")
+          if (syncInfo.partners(pid).appMasterRole == ApplicationMasterRole.LEADER) {
+            unHandlePartners -= pid
+          } else if (syncInfo.partners(pid).appMasterState == ApplicationMasterState.FAILED) {
+            unHandlePartners -= pid
+          } else {
+            syncInfo.setFollowerState(pid, ApplicationMasterState.FAILED)
+            logInfo(s"set follower ${pid} as failed")
+          }
         }
-        zkClient.updateSyncInfo(syncInfo)
+        if (!unHandlePartners.isEmpty) {
+          zkClient.updateSyncInfo(syncInfo)
+        }
       }
-      handlePartnersFailed(failedPartners, false)
+      if (!unHandlePartners.isEmpty) {
+        handlePartnersFailed(failedPartners, false)
+      }
     }
+    logInfo("follower state changed out")
   }
 
   def onSchedulerBackendStarted(endpointRef: RpcEndpointRef): Unit = {
@@ -507,8 +566,20 @@ class DAGScheduler(
     startSendRemoteEvents()
   }
 
-  def getSyncInfo(): SyncInfo = {
+  def getSyncInfo(leaderChange: Boolean = false): SyncInfo = {
     syncInfoLock.synchronized {
+      if (leaderChange) {
+        if (zkClient.isSyncInfoUpdate()) {
+          syncInfo = zkClient.getSyncInfo()
+        } else {
+          Thread.sleep(700)
+          if (zkClient.isSyncInfoUpdate()) {
+            syncInfo = zkClient.getSyncInfo()
+          }
+        }
+        return syncInfo
+      }
+
     if (!isLeader && zkClient.isSyncInfoUpdate()) {
         syncInfo = zkClient.getSyncInfo()
       }
@@ -517,8 +588,13 @@ class DAGScheduler(
     }
   }
 
-  def checkLeader(): Unit = {
+  def checkLeader(): Unit = leaderChangeLock.synchronized{
+    // logInfo("in leaderChangeLock checkLeader")
     isLeader = zkClient.isLeader()
+    if (isLeader && zkClient.getLeader() != leaderId && leaderId != -1) {
+      getSyncInfo(true)
+    }
+    // logInfo("out leaderChangeLock checkLeader")
   }
 
   def onJobStarted(jobId: Int): Unit = {
@@ -529,8 +605,10 @@ class DAGScheduler(
     while (!alright) {
       var wait = false
       val ps = zkClient.getStageInfo()
+      val sInfo = getSyncInfo()
       ps.foreach {case(pid, (jId, sId)) =>
-        if (jobId > jId) {
+        if (jobId > jId
+          && sInfo.partners(pid).appMasterState == ApplicationMasterState.RUNNING) {
           wait = true
           logInfo(s"partner ${pid} is not ready yet, jobId: ${jId}, stageId: ${sId}")
         }
@@ -542,17 +620,20 @@ class DAGScheduler(
       }
     }
 
-    logInfo("clear events cache")
-    eventsHandled.clear()
-    eventsFromLeader.clear()
-    localLock.synchronized{
-      eventsFromLocalOnLeader.clear()
-      eventsFromLocalOnFollower.clear()
+    if (false) {
+      logInfo("clear events cache")
+      eventsHandled.clear()
+      eventsFromLeader.clear()
+      localLock.synchronized{
+        eventsFromLocalOnLeader.clear()
+        eventsFromLocalOnFollower.clear()
+      }
+      followerLock.synchronized{eventsFromFollower.clear()}
+      toLeaderLock.synchronized{eventsToSendToLeader.clear()}
+      historyEventsLock.synchronized{historyEventsByEpoch.clear()}
+      successLock.synchronized{eventsSuccess.clear()}
     }
-    followerLock.synchronized{eventsFromFollower.clear()}
-    toLeaderLock.synchronized{eventsToSendToLeader.clear()}
-    historyEventsLock.synchronized{historyEventsByEpoch.clear()}
-    successLock.synchronized{eventsSuccess.clear()}
+
 
     logInfo(s"job $jobId shall start")
   }
@@ -701,9 +782,9 @@ class DAGScheduler(
     val followerEvents = getEventsFromFollower(getAndClear)
     val localEvents = getEventsFromLocal(getAndClear)
 
-    var historyEventsById = new HashMap[Int, CompletionEvent]
+    var historyEventsById = new HashMap[(Int, Int), CompletionEvent]
     getEventsToHistory().foreach { case(ep, es) =>
-      historyEventsById ++= es.map {e => (e.task.partitionId, e)}.toMap
+      historyEventsById ++= es.map {e => ((e.task.stageId, e.task.partitionId), e)}.toMap
     }
 
     val followerEventsSet = new HashSet[CompletionEvent]
@@ -711,7 +792,7 @@ class DAGScheduler(
       followerEventsSet ++= e
     }
 
-    var asks = new mutable.HashMap[Int, HashSet[Int]]
+    var asks = new mutable.HashMap[Int, HashSet[(Int, Int)]]
     askListLock.synchronized {
       asks = askFromFollower.clone()
       askFromFollower.clear()
@@ -728,7 +809,7 @@ class DAGScheduler(
         }
       }
       if (!askResponse.isEmpty) {
-        logInfo(s"response to follower ${fid}: ${askResponse.toString()}")
+        logInfo(s"response to follower ${fid}: ${askResponse.map(e => e.task.partitionId)}")
       }
       eventsToSend.put(fid, followerEventsSet.diff(es) ++ localEvents ++ askResponse)
     }
@@ -737,7 +818,7 @@ class DAGScheduler(
     val allEventsThisEpoch = followerEventsSet ++ localEvents
     getSyncInfo().partners.foreach{ case(pid, info) =>
         if (!eventsToSend.isDefinedAt(pid) && pid != id
-          && info.appMasterState == ApplicationMasterState.RUNNING) {
+          && info.appMasterState != ApplicationMasterState.FAILED) {
           val askResponse = new mutable.HashSet[CompletionEvent]
           if (asks.isDefinedAt(pid)) {
             asks(pid).foreach { eid =>
@@ -747,7 +828,7 @@ class DAGScheduler(
             }
           }
           if (!askResponse.isEmpty) {
-            logInfo(s"response to follower ${pid}: ${askResponse.toString()}")
+            logInfo(s"response to follower ${pid}: ${askResponse.map(e => e.task.partitionId)}")
           }
           eventsToSend.put(pid, allEventsThisEpoch ++ askResponse)
         }
@@ -1188,7 +1269,8 @@ class DAGScheduler(
       partitions: Seq[Int],
       callSite: CallSite,
       resultHandler: (Int, U) => Unit,
-      properties: Properties): JobWaiter[U] = {
+      properties: Properties): JobWaiter[U] = leaderChangeLock.synchronized{
+    // logInfo("in leaderChangeLock submitJobOnLeader")
     // Check to make sure we are not launching a task on a partition that does not exist.
     val maxPartitions = rdd.partitions.length
     partitions.find(p => p >= maxPartitions || p < 0).foreach { p =>
@@ -1221,6 +1303,7 @@ class DAGScheduler(
     eventProcessLoop.post(JobSubmitted(
       jobId, rdd, func2, partitions.toArray, callSite, waiter,
       SerializationUtils.clone(properties)))
+    // logInfo("out leaderChangeLock submitJobOnLeader")
     waiter
   }
 
@@ -1245,6 +1328,10 @@ class DAGScheduler(
       + s"appState: ${sInfo.partners(id).appMasterState}")
     while (sInfo.jobId == -1 || lastJobId + 1 != sInfo.jobId
       && sInfo.partners(id).appMasterState != ApplicationMasterState.RECOVERING) {
+      checkLeader()
+      if (isLeader) {
+        return submitJobOnLeader(rdd, func, partitions, callSite, resultHandler, properties)
+      }
       logInfo("wait leader to update syncInfo, "
         + s"lastJobId: ${lastJobId}, syncJobId: ${sInfo.jobId}")
       Thread.sleep(1000)
@@ -1663,7 +1750,7 @@ class DAGScheduler(
     // if not, don't submit stage, just continue
     checkLeader()
     val leaderJobId = getSyncInfo().jobId
-    if(!isLeader && jobId < leaderJobId) {
+    if(!isLeader && jobId < leaderJobId && false) {
       logInfo(s"recover job, leader job id: ${leaderJobId}, local job id: ${jobId}")
       recoverJob(job)
     } else {
@@ -1721,7 +1808,8 @@ class DAGScheduler(
   }
 
   /** Submits stage, but first recursively submits any missing parents. */
-  private def submitStage(stage: Stage) {
+  private def submitStage(stage: Stage): Unit = leaderChangeLock.synchronized{
+    // logInfo("in leaderChangeLock submit stage")
     val jobId = activeJobForStage(stage)
     if (jobId.isDefined) {
       logDebug("submitStage(" + stage + ")")
@@ -1790,6 +1878,7 @@ class DAGScheduler(
     } else {
       abortStage(stage, "No active job for stage " + stage.id, None)
     }
+    // logInfo("out leaderChangeLock submit stage")
   }
 
   /** Called when stage's parents are available and we can now do its task. */
@@ -1928,6 +2017,7 @@ class DAGScheduler(
 
   private def submitMissingTasksOnLeader(stage: Stage, jobId: Int) {
     logInfo("submitMissingTasksOnLeader(" + stage + ")")
+    logInfo(s"pendingPartitions: ${stage.pendingPartitions.toString()}")
     // Get our pending tasks and remember them in our pendingTasks entry
     stage.pendingPartitions.clear()
 
@@ -1939,17 +2029,22 @@ class DAGScheduler(
 
     // First figure out the indexes of partition ids to compute.
     val partitionsToCompute: Seq[Int] = stage.findMissingPartitions()
+    logInfo(s"allPartitions: ${partitionsToCompute}")
 
     runningStages += stage
 
     var partners: HashMap[Int, ClusterInfo] = HashMap.empty
     syncInfoLock.synchronized {
-      partners = taskDistributor.distributeTaskByRandom(stage.id, null, partitionsToCompute,
-        getSyncInfo().partners)
-      syncInfo.setPartners(partners)
-      syncInfo.setSubPartFlag(jobId, stage.id)
-      // syncInfo.setOriginals(AccumulatorContext.getRegisterSet())
-      zkClient.updateSyncInfo(syncInfo)
+      if (!getSyncInfo().partners(id).subPartitions.isDefinedAt(stage.id)) {
+        partners = taskDistributor.distributeTask(stage.id, partitionsToCompute,
+          syncInfo.partners)
+        syncInfo.setPartners(partners)
+        syncInfo.setSubPartFlag(jobId, stage.id)
+        // syncInfo.setOriginals(AccumulatorContext.getRegisterSet())
+        zkClient.updateSyncInfo(syncInfo)
+      } else {
+        partners = syncInfo.partners
+      }
     }
 
 
@@ -2092,6 +2187,8 @@ class DAGScheduler(
         logInfo(s"markStageAsFinished: ${stage.id}")
         markStageAsFinished(stage, None)
       }
+      stage.pendingPartitions ++= partitionsToCompute.toSet
+      stage.latestInfo.submissionTime = Some(clock.getTimeMillis())
 
       val debugString = stage match {
         case stage: ShuffleMapStage =>
@@ -2124,6 +2221,7 @@ class DAGScheduler(
 
     // First figure out the indexes of partition ids to compute.
     val partitionsToCompute: Seq[Int] = stage.findMissingPartitions()
+    logInfo(s"allPartitions: ${partitionsToCompute}")
     runningStages += stage
 
     var sInfo = getSyncInfo()
@@ -2268,6 +2366,8 @@ class DAGScheduler(
         logInfo(s"markStageAsFinished: ${stage.id}")
         markStageAsFinished(stage, None)
       }
+      stage.pendingPartitions ++= partitionsToCompute.toSet
+      stage.latestInfo.submissionTime = Some(clock.getTimeMillis())
 
       val debugString = stage match {
         case stage: ShuffleMapStage =>
@@ -2291,7 +2391,7 @@ class DAGScheduler(
     // Add a submitTasksAdditional() to due with these new TaskSets.
 
     logInfo("submitMissingTasksAdditional(" + stage + "), "
-      + s"partitions: ${partitions.toString()}")
+      + s"partitions: ${partitions.sorted}")
     // Get our pending tasks and remember them in our pendingTasks entry
 
     // First figure out the indexes of partition ids to compute.
@@ -2393,11 +2493,12 @@ class DAGScheduler(
         + stage + " (" + stage.rdd + ")")
       // stage.pendingPartitions ++= tasks.map(_.partitionId)
       // logDebug("New pending partitions: " + stage.pendingPartitions)
-      if (betweenStage) {
+      if (!runningStages.contains(stage)) {
         return
       }
-      taskScheduler.submitTasksAdditional(jobId.toString + stage.id.toString, new TaskSet(
-        tasks.toArray, stage.id, stage.latestInfo.attemptId, jobId, properties))
+      val taskSetName = "TaskSetAdditional_" + jobId.toString + "_" + stage.id.toString
+      taskScheduler.submitTasksAdditional(taskSetName,
+        new TaskSet(tasks.toArray, stage.id, stage.latestInfo.attemptId, jobId, properties))
       // stage.latestInfo.submissionTime = Some(clock.getTimeMillis())
     } else {
       // Because we posted SparkListenerStageSubmitted earlier, we should mark
@@ -2573,7 +2674,7 @@ class DAGScheduler(
             val status = event.result.asInstanceOf[MapStatus]
             val execId = status.location.executorId
             logDebug("ShuffleMapTask finished on " + execId)
-            if (failedEpoch.contains(execId) && smt.epoch <= failedEpoch(execId)) {
+            if (!isRemote && failedEpoch.contains(execId) && smt.epoch <= failedEpoch(execId)) {
               logInfo(s"Ignoring possibly bogus $smt completion from executor $execId")
             } else {
               shuffleStage.addOutputLoc(smt.partitionId, status)
@@ -3019,6 +3120,41 @@ class DAGScheduler(
     }
   }
 
+  def handlePartnersRecover(pids: HashSet[Int]): Unit = {
+    logInfo(s"handlePartnersRecover")
+    val checkRecover = new Runnable() {
+      override def run(): Unit = {
+        try {
+          var alright = false
+          while (!alright) {
+            var wait = false
+            val ps = zkClient.getStageInfo()
+            val recoveringPartner = pids
+            recoveringPartner.foreach { pid =>
+              if (ps(pid)._1 < ps(id)._1) {
+                wait = true
+                logInfo(s"partner ${pid} is still recovering," +
+                  s"jobId: ${ps(pid)._1}, stageId: ${ps(pid)._2}")
+              } else {
+                syncInfoLock.synchronized {
+                  logInfo(s"partner ${pid} recover done")
+                  syncInfo.setFollowerState(pid, ApplicationMasterState.RUNNING)
+                  pids -= pid
+                }
+              }
+            }
+            if (wait) {
+              Thread.sleep(3000)
+            } else {
+              alright = true
+            }
+          }
+        }
+      }
+    }
+    checkRecover.run()
+  }
+
   // called when partner(s) fail in Leader AM
   // 1. reSubmit failed tasks belong to failed partners
   // TODO: 2. reSubmit sAM to the clusters where failed partners belong to
@@ -3058,7 +3194,9 @@ class DAGScheduler(
         val newReceived = getEventsFromFollower(false)
         val history = getEventsToHistory()
         pids.foreach { pid =>
-          allReceivedEventsIds ++= newReceived(pid).map {e => e.task.partitionId}
+          if (newReceived.isDefinedAt(pid)) {
+            allReceivedEventsIds ++= newReceived(pid).map {e => e.task.partitionId}
+          }
         }
         history.foreach { case(ep, es) =>
           allReceivedEventsIds ++= es.map {e => e.task.partitionId}
@@ -3068,7 +3206,7 @@ class DAGScheduler(
 
     val partitionEachStage = new HashMap[Int, Seq[Int]]
 
-    val checkStages = runningStages
+    val checkStages = runningStages.clone()
     if (newLeader) {
       checkStages ++= waitingStagesWontClear
     }
@@ -3080,14 +3218,30 @@ class DAGScheduler(
           subPartitions ++= sInfo.partners(pid).subPartitions(stage.id)
         }
       }
-      val partitionAdditional = subPartitions.diff(allReceivedEventsIds.toSeq)
-      submitMissingTasksAdditional(stage, jobId, partitionAdditional)
-      partitionEachStage.put(stage.id, partitionAdditional)
+      logInfo(s"in stage ${stage.id}, " +
+        s"failed partners ${pids} handle subPartitions: ${subPartitions.sorted}")
+      // logInfo(s"allReceivedEventsIds: ${allReceivedEventsIds.toSeq.sorted}")
+      logInfo(s"stage ${stage.id} pendingPartitions: ${stage.pendingPartitions.toSeq.sorted}")
+      // val partitionAdditional = subPartitions.diff(allReceivedEventsIds.toSeq)
+      val partitionAdditional = stage.pendingPartitions.intersect(subPartitions.toSet).toSeq
+      if (!partitionAdditional.isEmpty) {
+        if (runningStages.contains(stage)) {
+          submitMissingTasksAdditional(stage, jobId, partitionAdditional)
+        } else {
+          logInfo(s"partitionAdditional to submit later: ${partitionAdditional.sorted}")
+        }
+        partitionEachStage.put(stage.id, partitionAdditional)
+      } else {
+        logInfo(s"stage ${stage.id} has no additional partition to submit")
+      }
     }
+
     syncInfoLock.synchronized {
       partitionEachStage.foreach {case(stageId, sp) =>
           syncInfo.addPartition(stageId, id, sp)
       }
+      pids.foreach {pid =>
+      syncInfo.partners(pid).clearSubPartitions()}
       zkClient.updateSyncInfo(syncInfo)
     }
   }
@@ -3121,7 +3275,7 @@ class DAGScheduler(
   }
 
   def sendRemoteEventsToLeader(): Unit = {
-    var ask = new HashSet[Int]
+    var ask = new HashSet[(Int, Int)]
     askListLock.synchronized {
       ask = askList.clone()
       askList.clear()
@@ -3133,16 +3287,25 @@ class DAGScheduler(
       if(!ask.isEmpty) {
         logInfo(s"ask for events: ${ask.toString()}")
       }
-      taskScheduler.sendRemoteEventsToLeader(id, ceEpoch, events, ask)
+      try {
+        taskScheduler.sendRemoteEventsToLeader(id, ceEpoch, events, ask)
+      } catch {
+        case e: ConnectException =>
+          logInfo("ConnectException")
+        case e: IOException =>
+          logInfo(s"IOException: $e")
+      }
+
     }
   }
 
   // called every few seconds
   def sendRemoteEventsToFollowers(): Unit = {
     val events = getEventsToSendOnLeader(true)
-    val allEventsIds = new HashSet[Int]
+    // val allEventsIds = new HashSet[Int]
+    val allEventsIds = new mutable.HashSet[(Int, Int)]
     getEventsToHistory().foreach { case(ep, es) =>
-      allEventsIds ++= es.map(e => e.task.partitionId)
+      allEventsIds ++= es.map(e => (e.task.stageId, e.task.partitionId))
     }
 
     var hasEvents = false
@@ -3152,17 +3315,25 @@ class DAGScheduler(
         }
     }
 
-    if (hasEvents) {
+    if (hasEvents || true) {
       ceEpoch += 1
       zkClient.updateEpoch(ceEpoch)
       logInfo(s"sendRemoteEventsToFollowers, epoch: ${ceEpoch}")
-      taskScheduler.sendRemoteEventsToFollowers(ceEpoch, events, allEventsIds)
+      try {
+        taskScheduler.sendRemoteEventsToFollowers(ceEpoch, events, allEventsIds)
+      } catch {
+        case e: ConnectException =>
+          logInfo("ConnectException")
+        case e: IOException =>
+          logInfo("IOException")
+      }
+
     }
   }
 
   def handleRemoteEventsFromLeader(epoch: Long,
                                    events: HashSet[CompletionEvent],
-                                   allEventsIds: HashSet[Int]): Unit = {
+                                   allEventsIds: HashSet[(Int, Int)]): Unit = {
     // AccumulatorContext.setOriginals(getSyncInfo().originals)
     if (eventsFromLeader.isDefinedAt(epoch)) {
       logInfo(s"remote events from leader with epoch ${epoch} already got")
@@ -3184,29 +3355,31 @@ class DAGScheduler(
       }
     }
 
-    val localEvents = getEventsFromLocal(false).map{ e => (e.task.partitionId, e)}.toMap
+    val localEvents = getEventsFromLocal(false).map{ e =>
+      ((e.task.stageId, e.task.partitionId), e)}.toMap
+
     val eventsLeaderHasNot = localEvents.keySet.diff(allEventsIds)
     eventsLeaderHasNot.foreach { id =>
       addEventToSendOnFollower(localEvents(id))
     }
-    logInfo(s"allEventsIds from leader: ${allEventsIds.toString()}")
-    logInfo(s"have events leader has not: ${eventsLeaderHasNot.toString()}")
+    logInfo(s"allEventsIds from leader: ${allEventsIds.toSeq.sorted.toString()}")
+    logInfo(s"have events leader has not: ${eventsLeaderHasNot.toSeq.sorted.toString()}")
 
     var allReceivedEventsIds = localEvents.keySet
     eventsFromLeader.foreach {case(ep, es) =>
-      allReceivedEventsIds ++= es.map {e => e.task.partitionId}
+      allReceivedEventsIds ++= es.map {e => (e.task.stageId, e.task.partitionId)}
     }
     val eventsIHasNot = allEventsIds.diff(allReceivedEventsIds)
     askListLock.synchronized {
       askList ++= eventsIHasNot
     }
-    logInfo(s"have events I has not: ${eventsIHasNot.toString()}")
+    logInfo(s"have events I have not: ${eventsIHasNot.toSeq.sorted.toString()}")
   }
 
   def handleRemoteEventsFromFollower(followerId: Int,
                                      epoch: Long,
                                      events: HashSet[CompletionEvent],
-                                     ask: HashSet[Int]): Unit = {
+                                     ask: HashSet[(Int, Int)]): Unit = {
     if (epoch != ceEpoch) {
       // TODO: send history events to it
     }

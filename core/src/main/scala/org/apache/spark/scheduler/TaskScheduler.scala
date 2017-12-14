@@ -101,12 +101,12 @@ private[spark] trait TaskScheduler {
 
   def sendRemoteEventsToFollowers(epoch: Long,
                                   events: HashMap[Int, HashSet[CompletionEvent]],
-                                  allEventsIds: HashSet[Int]): Unit
+                                  allEventsIds: HashSet[(Int, Int)]): Unit
 
   def sendRemoteEventsToLeader(followerId: Int,
                                epoch: Long,
                                events: HashSet[CompletionEvent],
-                               ask: HashSet[Int]): Unit
+                               ask: HashSet[(Int, Int)]): Unit
 
   def getRecoverInfoFromLeader(followerId: Int): RecoverInfo
 

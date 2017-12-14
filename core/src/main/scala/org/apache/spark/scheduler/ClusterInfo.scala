@@ -73,6 +73,10 @@ class ClusterInfo (
     subPartitions(stageId) = p
   }
 
+  def clearSubPartitions(): Unit = {
+    subPartitions = subPartitions.map {case (sid, subp) => (sid, Seq.empty)}
+  }
+
   def setSubtasks(stageId: Int, t: Seq[Task[_]]): Unit = {
     subTasks(stageId) = t
   }

@@ -17,6 +17,7 @@
 
 package org.apache.spark.scheduler.cluster
 
+import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.annotation.concurrent.GuardedBy
@@ -30,9 +31,11 @@ import org.apache.spark.rpc.{RpcEndpointRef, _}
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.scheduler.cluster.CoarseGrainedSchedulerBackend.ENDPOINT_NAME
+import org.apache.spark.serializer.{JavaSerializer, JavaSerializerInstance}
 import org.apache.spark.util.{RpcUtils, SerializableBuffer, ThreadUtils, Utils}
 
 import scala.collection.mutable
+import scala.util.control.ControlThrowable
 import scala.util.{Failure, Success}
 
 
@@ -101,6 +104,19 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   // put events in it if the follower is not register yet
   private val followerIdToEvents = new HashMap[Int, RemoteCompletionEventsFromLeader]
 
+  private val eventToSerialized = new HashMap[CompletionEvent, ByteBuffer]
+
+  private val eventSerializer = SparkEnv.get.serializer.newInstance()
+
+  // val eventSerializer =
+  // new JavaSerializer(conf).newInstance().asInstanceOf[JavaSerializerInstance]
+
+  protected val serLock = new AnyRef
+
+  private val switch = new HashMap[Int, Boolean]
+  switch(2) = true
+  switch(3) = false
+
   private var leaderEndpoint: Option[RpcEndpointRef] = None
 
   class DriverEndpoint(override val rpcEnv: RpcEnv, sparkProperties: Seq[(String, String)])
@@ -120,7 +136,6 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       ThreadUtils.newDaemonSingleThreadScheduledExecutor("driver-revive-thread")
 
     private var selfStarted = false
-
 
     override def onStart() {
       // Periodically revive offers to allow delay scheduling to work
@@ -164,10 +179,12 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
             logWarning(s"Attempted to kill task $taskId for unknown executor $executorId.")
         }
 
-      case RemoteCompletionEventsFromLeader(epoch, events, allEventsIds) =>
+      case RemoteCompletionEventsFromLeader(epoch, eventsSer, allEventsIds) =>
+        val events = deserializeEvents(eventsSer)
         scheduler.handleRemoteEventsFromLeader(epoch, events, allEventsIds)
 
-      case RemoteCompletionEventsFromFollower(followerId, epoch, event, ask) =>
+      case RemoteCompletionEventsFromFollower(followerId, epoch, eventSer, ask) =>
+        val event = deserializeEvents(eventSer)
         scheduler.handleRemoteEventsFromFollower(followerId, epoch, event, ask)
 
       case NewStageEvent(followerId, jobId, stageId) =>
@@ -252,6 +269,11 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         }
         getLeaderEndpoint().ask[Boolean](RegisterAsFollower(followerId, self))
         logInfo(s"RegisterAsFollowerInternal")
+        context.reply(true)
+
+      case RemoteCompletionEventsFromLeader(epoch, eventsSer, allEventsIds) =>
+        val events = deserializeEvents(eventsSer)
+        scheduler.handleRemoteEventsFromLeader(epoch, events, allEventsIds)
         context.reply(true)
 
     }
@@ -470,38 +492,84 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     getLeaderEndpoint().send(NewStageEvent(followerId, jobId, stageId))
   }
 
+  def sendToFollower(fid: Int,
+                     endpoint: RpcEndpointRef,
+                     events: RemoteCompletionEventsFromLeader): Future[Boolean] = {
+    var success: Future[Boolean] = null
+    val sendEvents = new Runnable() {
+      override def run(): Unit = {
+        try {
+          logInfo(s"sendToFollower $fid in thread")
+          success = endpoint.ask[Boolean](events)
+        }
+      }
+    }
+    sendEvents.run()
+    success
+  }
+
   def sendRemoteEventsToFollowers(epoch: Long,
                                   events: HashMap[Int, HashSet[CompletionEvent]],
-                                  allEventsIds: HashSet[Int]): Unit = {
-    events.foreach{ case(fid, e) =>
+                                  allEventsIds: HashSet[(Int, Int)]): Unit = this.synchronized{
+    for (es <- events) {
+      val fid = es._1
+      val e = serializeEvents(es._2)
+    // }
+    // events.foreach{ case(fid, e) =>
       if (followerIdToEndpoint.isDefinedAt(fid)) {
         val eventsToSend = e
         if (followerIdToEvents.isDefinedAt(fid)) {
-          eventsToSend ++= followerIdToEvents(fid).events
+          eventsToSend ++= followerIdToEvents(fid).eventsSer.clone()
           followerIdToEvents.remove(fid)
         }
-        followerIdToEndpoint(fid).send(RemoteCompletionEventsFromLeader(epoch,
-          eventsToSend, allEventsIds))
+        logInfo(s"sendToFollower $fid, size: ${eventsToSend.size}")
+        // val success = followerIdToEndpoint(fid).ask[Boolean](
+        //   RemoteCompletionEventsFromLeader(epoch, eventsToSend, allEventsIds))
+
+        val success = sendToFollower(fid, followerIdToEndpoint(fid),
+          RemoteCompletionEventsFromLeader(epoch, eventsToSend, allEventsIds))
+
+        while (!success.isCompleted) {
+          logInfo(s"$fid send not complete yet")
+          Thread.sleep(500)
+        }
+        logInfo(s"$fid send result: $success")
+
+        // sendToFollower(fid, followerIdToEndpoint(fid),
+        //   RemoteCompletionEventsFromLeader(epoch, eventsToSend, allEventsIds))
       } else {
         logInfo(s"follower ${fid} has not registered yet")
         if (followerIdToEvents.isDefinedAt(fid)) {
           logInfo(s"follower ${fid} has append events to send")
           followerIdToEvents.update(fid,
             RemoteCompletionEventsFromLeader(epoch,
-              e ++ followerIdToEvents(fid).events, allEventsIds))
+              e ++ followerIdToEvents(fid).eventsSer, allEventsIds))
         } else {
           followerIdToEvents.put(fid,
             RemoteCompletionEventsFromLeader(epoch, e, allEventsIds))
         }
       }
     }
+    /*
+    if (switch(2)) {
+      switch(2) = false
+    } else {
+      switch(2) = true
+    }
+    if (switch(3)) {
+      switch(3) = false
+    } else {
+      switch(3) = true
+    }
+    */
   }
 
   def sendRemoteEventsToLeader(followerId: Int,
                                epoch: Long,
                                events: HashSet[CompletionEvent],
-                               ask: HashSet[Int]): Unit = {
-    getLeaderEndpoint().send(RemoteCompletionEventsFromFollower(followerId, epoch, events, ask))
+                               ask: HashSet[(Int, Int)]): Unit = {
+    val eventSer = serializeEvents(events)
+    getLeaderEndpoint().send(RemoteCompletionEventsFromFollower(followerId, epoch, eventSer, ask))
   }
 
   override def stop() {
@@ -731,6 +799,36 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
    */
   protected def doKillExecutors(executorIds: Seq[String]): Future[Boolean] =
     Future.successful(false)
+
+  def deserializeEvents(eventsSer: HashSet[SerializableBuffer]): HashSet[CompletionEvent] =
+    serLock.synchronized{
+      val events = new mutable.HashSet[CompletionEvent]
+      eventsSer.foreach {eSer =>
+        val e = eventSerializer.deserialize[CompletionEvent](eSer.value)
+        events += e
+        eSer.value.rewind()
+        eventToSerialized(e) = eSer.value
+      }
+      events
+    }
+
+  def serializeEvents(events: HashSet[CompletionEvent]): HashSet[SerializableBuffer] =
+    serLock.synchronized{
+      val eventsSer = new mutable.HashSet[SerializableBuffer]
+      events.foreach {e =>
+        if (!eventToSerialized.isDefinedAt(e)) {
+          val eSer = new SerializableBuffer(eventSerializer.serialize(e))
+          eventToSerialized(e) = eSer.value
+          eventsSer += eSer
+        } else {
+          val buf = eventToSerialized(e)
+          buf.rewind()
+          eventsSer += new SerializableBuffer(buf)
+        }
+
+      }
+      eventsSer
+    }
 }
 
 private[spark] object CoarseGrainedSchedulerBackend {

@@ -203,7 +203,8 @@ private[spark] class TaskSchedulerImpl(
 
   override def submitTasksAdditional(taskSetName: String, taskSet: TaskSet) {
     val tasks = taskSet.tasks
-    logInfo("Adding task set " + taskSet.id + " with " + tasks.length + " tasks")
+    logInfo("submitTasksAdditional: " +
+      "Adding task set " + taskSet.id + " with " + tasks.length + " tasks")
     this.synchronized {
       val manager = createTaskSetManager(taskSet, maxTaskFailures)
       manager.name += taskSetName
@@ -523,20 +524,20 @@ private[spark] class TaskSchedulerImpl(
 
   def handleRemoteEventsFromLeader(epoch: Long,
                                    events: HashSet[CompletionEvent],
-                                   allEventsIds: HashSet[Int]): Unit = {
+                                   allEventsIds: HashSet[(Int, Int)]): Unit = {
     dagScheduler.handleRemoteEventsFromLeader(epoch, events, allEventsIds)
   }
 
   def handleRemoteEventsFromFollower(followerId: Int,
                                      epoch: Long,
                                      events: HashSet[CompletionEvent],
-                                     ask: HashSet[Int]): Unit = {
+                                     ask: HashSet[(Int, Int)]): Unit = {
     dagScheduler.handleRemoteEventsFromFollower(followerId, epoch, events, ask)
   }
 
   override def sendRemoteEventsToFollowers(epoch: Long,
                                            events: HashMap[Int, HashSet[CompletionEvent]],
-                                           allEventsIds: HashSet[Int]): Unit = {
+                                           allEventsIds: HashSet[(Int, Int)]): Unit = {
     backend match {
       case b: CoarseGrainedSchedulerBackend =>
         b.sendRemoteEventsToFollowers(epoch, events, allEventsIds)
@@ -548,7 +549,7 @@ private[spark] class TaskSchedulerImpl(
   override def sendRemoteEventsToLeader(followerId: Int,
                                         epoch: Long,
                                         events: HashSet[CompletionEvent],
-                                        ask: HashSet[Int]): Unit = {
+                                        ask: HashSet[(Int, Int)]): Unit = {
     backend match {
       case b: CoarseGrainedSchedulerBackend =>
         b.sendRemoteEventsToLeader(followerId, epoch, events, ask)

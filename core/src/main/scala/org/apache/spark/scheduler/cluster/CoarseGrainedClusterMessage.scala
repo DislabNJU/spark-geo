@@ -110,14 +110,14 @@ private[spark] object CoarseGrainedClusterMessages {
 
   // added by lxb
   case class RemoteCompletionEventsFromLeader(epoch: Long,
-                                              events: HashSet[CompletionEvent],
-                                              allEventsIds: HashSet[Int])
+                                              eventsSer: HashSet[SerializableBuffer],
+                                              allEventsIds: HashSet[(Int, Int)])
     extends CoarseGrainedClusterMessage
 
   case class RemoteCompletionEventsFromFollower(followerId: Int,
                                                 epoch: Long,
-                                                events: HashSet[CompletionEvent],
-                                                ask: HashSet[Int])
+                                                eventsSer: HashSet[SerializableBuffer],
+                                                ask: HashSet[(Int, Int)])
     extends CoarseGrainedClusterMessage
 
   case class RegisterAsFollower(followerId: Int, followerEndpoint: RpcEndpointRef)

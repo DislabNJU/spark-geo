@@ -161,6 +161,7 @@ public class ExternalShuffleBlockResolver {
    */
   public void applicationRemoved(String appId, boolean cleanupLocalDirs) {
     logger.info("Application {} removed, cleanupLocalDirs = {}", appId, cleanupLocalDirs);
+    logger.info("wont remove shuffle files");
     Iterator<Map.Entry<AppExecId, ExecutorShuffleInfo>> it = executors.entrySet().iterator();
     while (it.hasNext()) {
       Map.Entry<AppExecId, ExecutorShuffleInfo> entry = it.next();
@@ -168,7 +169,7 @@ public class ExternalShuffleBlockResolver {
       final ExecutorShuffleInfo executor = entry.getValue();
 
       // Only touch executors associated with the appId that was removed.
-      if (appId.equals(fullId.appId)) {
+      if (appId.equals(fullId.appId) && false) {
         it.remove();
         if (db != null) {
           try {

@@ -24,15 +24,13 @@ import java.util.concurrent.atomic.AtomicReference
 
 import scala.collection.mutable.HashMap
 import scala.util.control.NonFatal
-
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.yarn.api._
 import org.apache.hadoop.yarn.api.records._
 import org.apache.hadoop.yarn.conf.YarnConfiguration
 import org.apache.hadoop.yarn.util.{ConverterUtils, Records}
-
 import org.apache.spark._
-import org.apache.spark.deploy.SparkHadoopUtil
+import org.apache.spark.deploy.{SparkHadoopUtil, SparkSubmit}
 import org.apache.spark.deploy.history.HistoryServer
 import org.apache.spark.deploy.yarn.config._
 import org.apache.spark.internal.Logging
@@ -192,7 +190,7 @@ private[spark] class ApplicationMaster(
        */
       val noUse = new Array[String](2)
       //RecoveryAmClient.main(noUse)
-
+      //SparkSubmit.main()
 
 
       val appAttemptId = client.getAttemptId()

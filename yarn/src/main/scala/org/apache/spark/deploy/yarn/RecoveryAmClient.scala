@@ -1222,6 +1222,7 @@ private[spark] class RecoveryAmClient(
 
 }
 
+
 private object RecoveryAmClient extends Logging {
 
   def main(argStrings: Array[String]) {

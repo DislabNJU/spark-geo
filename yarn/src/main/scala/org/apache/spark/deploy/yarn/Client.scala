@@ -71,7 +71,6 @@ private[spark] class Client(
     this(clientArgs, SparkHadoopUtil.get.newConfiguration(spConf), spConf)
 
 
-
   private val numYarnStringTag: String = "spark.remote.NumYarnTag"
   private val yarnIpStringPreTag: String = "spark.remote.YarnTag"
   private val nameIpStringPreTag: String = "spark.remote.NameTag"
@@ -216,7 +215,7 @@ private[spark] class Client(
       // new sam for all remote yarn
       logInfo(s"new sam for all remote yarn")
 
-      newRemoteSAM()
+      //newRemoteSAM()
 
 
       appId
@@ -1338,6 +1337,8 @@ private object Client extends Logging {
     sparkConf.remove("spark.files")
     val args = new ClientArguments(argStrings)
     new Client(args, sparkConf).run()
+
+    new RecoveryAmClient(args, sparkConf).run()
   }
 
   // Alias for the user jar

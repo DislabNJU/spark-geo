@@ -191,7 +191,7 @@ private[spark] class ApplicationMaster(
        * test run recovery am
        */
       val noUse = new Array[String](2)
-      RecoveryAm.main(noUse)
+      //RecoveryAmClient.main(noUse)
 
 
 

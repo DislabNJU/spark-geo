@@ -57,13 +57,13 @@ import org.apache.spark.sparkzk.zkclient.common.serializer.containerLaunchContex
 import org.apache.spark.sparkzk.zkclient.{ZkSparkDataClient, ZkSparkRecoveryClient}
 import org.apache.spark.util.Utils
 
-private[spark] class RecoveryAm(
+private[spark] class RecoveryAmClient(
                              val args: ClientArguments,
                              val hadoopConf: Configuration,
                              val sparkConf: SparkConf)
   extends Logging {
 
-  import RecoveryAm._
+  import RecoveryAmClient._
   import YarnSparkHadoopUtil._
 
   def this(clientArgs: ClientArguments, spConf: SparkConf) =
@@ -1222,7 +1222,7 @@ private[spark] class RecoveryAm(
 
 }
 
-private object RecoveryAm extends Logging {
+private object RecoveryAmClient extends Logging {
 
   def main(argStrings: Array[String]) {
     if (!sys.props.contains("SPARK_SUBMIT")) {
@@ -1251,7 +1251,7 @@ private object RecoveryAm extends Logging {
     }
 
     val args = new ClientArguments(stringList)
-    new RecoveryAm(args, sparkConf).run()
+    new RecoveryAmClient(args, sparkConf).run()
   }
 
   // Alias for the user jar
@@ -1366,7 +1366,7 @@ private object RecoveryAm extends Logging {
     * are included in the system classpath, though. The extra class path and other uploaded files are
     * always made available through the system class path.
     *
-    * @param args RecoveryAm arguments (when starting the AM) or null (when starting executors).
+    * @param args RecoveryAmClient arguments (when starting the AM) or null (when starting executors).
     */
   private[yarn] def populateClasspath(
                                        args: ClientArguments,

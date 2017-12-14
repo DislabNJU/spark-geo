@@ -1,9 +1,10 @@
 package org.apache.spark.sparkzk.zkclient.common.serializer.containerLaunchContext;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 
-public class ClientArgsList {
+public class ClientArgsList implements Serializable{
 
     private List<String> userArgs = null;
     public ClientArgsList(List<String> listArgs){

@@ -1241,7 +1241,7 @@ private object RecoveryAm extends Logging {
 
     val zkSparkRecoveryClient = new ZkSparkRecoveryClient(sparkConf.get("spark.zk.hosts"), sparkConf.get("spark.remote.appname"))
 
-    val argsKeeper = zkSparkRecoveryClient.getData.asInstanceOf[ClientArgsList]
+    val argsKeeper = (ObTrans.BytesToObject(zkSparkRecoveryClient.getData)).asInstanceOf[ClientArgsList]
     val listArgs = argsKeeper.getUserArgs
 
     var stringList = new Array[String](listArgs.size())

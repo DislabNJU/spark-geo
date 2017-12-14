@@ -22,7 +22,7 @@ import java.net.{InetAddress, URI, UnknownHostException}
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util
-import java.util.{List, Properties, UUID}
+import java.util.{Properties, UUID}
 import java.util.zip.{ZipEntry, ZipOutputStream}
 
 import scala.collection.JavaConverters._
@@ -196,8 +196,8 @@ private[spark] class Client(
       yarnClient.submitApplication(appContext)
 
 
-      var userArgs: util.List[String] = null
-      userArgs  = new util.ArrayList[String]()
+      var userArgs: java.util.List[String] = null
+      userArgs  = new java.util.ArrayList[String]()
 
       val tempArgs =  args.userArgs //ArrayBuffer[String]
       for(i <- 0 until tempArgs.length){
@@ -216,7 +216,7 @@ private[spark] class Client(
       // new sam for all remote yarn
       logInfo(s"new sam for all remote yarn")
 
-     // newRemoteSAM()
+      newRemoteSAM()
 
 
       appId

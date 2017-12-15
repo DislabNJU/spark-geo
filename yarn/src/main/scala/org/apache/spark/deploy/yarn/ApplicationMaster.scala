@@ -38,6 +38,9 @@ import org.apache.spark.internal.config._
 import org.apache.spark.rpc._
 import org.apache.spark.scheduler.cluster.{CoarseGrainedSchedulerBackend, YarnSchedulerBackend}
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
+import org.apache.spark.sparkzk.zkclient.ZkSparkRecoveryClient
+import org.apache.spark.sparkzk.zkclient.common.serializer.ObTrans
+import org.apache.spark.sparkzk.zkclient.common.serializer.containerLaunchContext.ClientArgsList
 import org.apache.spark.util._
 
 /**
@@ -185,12 +188,6 @@ private[spark] class ApplicationMaster(
 
   final def run(): Int = {
     try {
-      /*
-       * test run recovery am
-       */
-      val noUse = new Array[String](2)
-      //RecoveryAmClient.main(noUse)
-      //SparkSubmit.main()
 
 
       val appAttemptId = client.getAttemptId()
@@ -268,6 +265,12 @@ private[spark] class ApplicationMaster(
       } else {
         runExecutorLauncher(securityMgr)
       }
+
+
+
+      //test recovey am
+      testRecoveryAmClient()
+
     } catch {
       case e: Exception =>
         // catch everything else if not specifically handled
@@ -277,6 +280,30 @@ private[spark] class ApplicationMaster(
           "Uncaught exception: " + e)
     }
     exitCode
+  }
+
+
+  //test recovey am
+
+  def testRecoveryAmClient(): Unit = {
+
+    /*
+     * test run recovery am
+     */
+    val zkSparkRecoveryClient = new ZkSparkRecoveryClient(sparkConf.get("spark.zk.hosts"), sparkConf.get("spark.remote.appname"))
+
+    val argsKeeper = (ObTrans.BytesToObject(zkSparkRecoveryClient.getData)).asInstanceOf[ClientArgsList]
+    val listArgs = argsKeeper.getUserArgs
+
+    val stringList = new Array[String](listArgs.size())
+
+    for(i <- 0 until listArgs.size()){
+      logInfo(listArgs.get(i))
+      stringList.update(i,listArgs.get(i))
+    }
+
+    RecoveryAmClient.main(stringList,sparkConf)
+    //SparkSubmit.main()
   }
 
   /**

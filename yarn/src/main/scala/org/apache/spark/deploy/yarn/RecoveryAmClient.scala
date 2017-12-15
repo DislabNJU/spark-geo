@@ -1225,7 +1225,8 @@ private[spark] class RecoveryAmClient(
 
 private object RecoveryAmClient extends Logging {
 
-  def main(argStrings: Array[String]) {
+  def main(argStrings: Array[String],
+           sparkConf: SparkConf) {
     if (!sys.props.contains("SPARK_SUBMIT")) {
       logWarning("WARNING: This client is deprecated and will be removed in a " +
         "future version of Spark. Use ./bin/spark-submit with \"--master yarn\"")
@@ -1234,24 +1235,13 @@ private object RecoveryAmClient extends Logging {
     // Set an env variable indicating we are running in YARN mode.
     // Note that any env variable with the SPARK_ prefix gets propagated to all (remote) processes
     System.setProperty("SPARK_YARN_MODE", "true")
-    val sparkConf = new SparkConf
+    //val sparkConf = new SparkConf
     // SparkSubmit would use yarn cache to distribute files & jars in yarn mode,
     // so remove them from sparkConf here for yarn mode.
     sparkConf.remove("spark.jars")
     sparkConf.remove("spark.files")
 
-    val zkSparkRecoveryClient = new ZkSparkRecoveryClient(sparkConf.get("spark.zk.hosts"), sparkConf.get("spark.remote.appname"))
-
-    val argsKeeper = (ObTrans.BytesToObject(zkSparkRecoveryClient.getData)).asInstanceOf[ClientArgsList]
-    val listArgs = argsKeeper.getUserArgs
-
-    var stringList = new Array[String](listArgs.size())
-
-    for(i <- 0 until listArgs.size()){
-      stringList.update(i,listArgs.get(i))
-    }
-
-    val args = new ClientArguments(stringList)
+    val args = new ClientArguments(argStrings)
     new RecoveryAmClient(args, sparkConf).run()
   }
 

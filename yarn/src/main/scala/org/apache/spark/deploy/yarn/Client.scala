@@ -1338,7 +1338,8 @@ private object Client extends Logging {
     val args = new ClientArguments(argStrings)
     new Client(args, sparkConf).run()
 
-    new RecoveryAmClient(args, sparkConf).run()
+    //new RecoveryAmClient(args, sparkConf).run()//sucess
+    //RecoveryAmClient.main(argStrings)
   }
 
   // Alias for the user jar

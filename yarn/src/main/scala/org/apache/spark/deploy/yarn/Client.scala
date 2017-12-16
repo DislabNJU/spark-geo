@@ -1313,9 +1313,23 @@ private[spark] class Client(
       val zkSparkRecoveryCentre = new ZkSparkRecoveryCentre(sparkConf.get("spark.zk.hosts"), groupName)
 
       while(!zkSparkRecoveryCentre.isProcessDone){
+
         if(zkSparkRecoveryCentre.isRecoveryChildExist){
-          var recoveryHosts: util.List[String] = zkSparkRecoveryCentre.getAllRecoveryHost
-          for(hostIp <- recoveryHosts){
+
+          var recoveryHosts: util.List[String] = zkSparkRecoveryCentre.getAllRecoveryHost()
+          logInfo("HAHA1: "+recoveryHosts)
+          logInfo("HAHA1: "+recoveryHosts.size())
+          var scalaRecoveryHostArray = new Array[String](recoveryHosts.size())
+
+          //no -1!!!!!!!!!!!!!!!!!!
+          for(i <- 0 until recoveryHosts.size()){
+            logInfo("HAHA2: "+recoveryHosts.get(i))
+            scalaRecoveryHostArray.update(i, recoveryHosts.get(i))
+            logInfo("HAHA3: "+scalaRecoveryHostArray.apply(i))
+          }
+
+          for(hostIp <- scalaRecoveryHostArray){
+            logInfo("HAHA4: "+hostIp)
             newRrcoveryAM(hostIp);
           }
         }
@@ -1333,7 +1347,7 @@ private[spark] class Client(
       // Setup the credentials before doing anything else,
       // so we have don't have issues at any point.
       // setupCredentials() //????
-
+      logInfo(myYarnIp)
 
       var appId: ApplicationId = null
       //import org.apache.spark.deploy.yarn.YarnClientCommon
@@ -1418,7 +1432,9 @@ private object Client extends Logging {
         logInfo("no SPARK_HOME")
     }
 
-
+    for(argsStringName <- argStrings){
+      logInfo("ER:" + argsStringName);
+    }
 
 
     // Set an env variable indicating we are running in YARN mode.

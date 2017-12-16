@@ -194,10 +194,7 @@ private[spark] class ApplicationMaster(
 
       //test recovey am
       //testRecoveryAmClient()
-      val zkSparkRecoveryCentre =
-        new ZkSparkRecoveryCentre(sparkConf.get("spark.zk.hosts"), sparkConf.get("spark.remote.appname"))
-
-      zkSparkRecoveryCentre.putRecoveryTask("slave-0-10",System.currentTimeMillis()+"")
+      //testRecoveryAmFromSourceClient("slave-0-10")
 
       val appAttemptId = client.getAttemptId()
 
@@ -290,6 +287,13 @@ private[spark] class ApplicationMaster(
     exitCode
   }
 
+
+  //test recovery am from source client
+  def testRecoveryAmFromSourceClient(hostName: String): Unit = {
+    val zkSparkRecoveryCentre =
+      new ZkSparkRecoveryCentre(sparkConf.get("spark.zk.hosts"), sparkConf.get("spark.remote.appname"))
+    zkSparkRecoveryCentre.putRecoveryTask(hostName,System.currentTimeMillis()+"")
+  }
 
   //test recovey am
 

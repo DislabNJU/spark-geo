@@ -24,15 +24,13 @@ import java.util.concurrent.atomic.AtomicReference
 
 import scala.collection.mutable.HashMap
 import scala.util.control.NonFatal
-
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.yarn.api._
 import org.apache.hadoop.yarn.api.records._
 import org.apache.hadoop.yarn.conf.YarnConfiguration
 import org.apache.hadoop.yarn.util.{ConverterUtils, Records}
-
 import org.apache.spark._
-import org.apache.spark.deploy.SparkHadoopUtil
+import org.apache.spark.deploy.{SparkHadoopUtil, SparkSubmit}
 import org.apache.spark.deploy.history.HistoryServer
 import org.apache.spark.deploy.yarn.config._
 import org.apache.spark.internal.Logging
@@ -40,6 +38,9 @@ import org.apache.spark.internal.config._
 import org.apache.spark.rpc._
 import org.apache.spark.scheduler.cluster.{CoarseGrainedSchedulerBackend, YarnSchedulerBackend}
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
+import org.apache.spark.sparkzk.zkclient.{ZkSparkRecoveryCentre, ZkSparkRecoveryClient}
+import org.apache.spark.sparkzk.zkclient.common.serializer.ObTrans
+import org.apache.spark.sparkzk.zkclient.common.serializer.containerLaunchContext.ClientArgsList
 import org.apache.spark.util._
 
 /**
@@ -185,8 +186,16 @@ private[spark] class ApplicationMaster(
     client.getAttemptId()
   }
 
+
+
   final def run(): Int = {
     try {
+
+
+      //test recovey am
+      //testRecoveryAmClient()
+      //testRecoveryAmFromSourceClient("slave-0-10")
+
       val appAttemptId = client.getAttemptId()
 
       logInfo("init conf 3")
@@ -262,6 +271,11 @@ private[spark] class ApplicationMaster(
       } else {
         runExecutorLauncher(securityMgr)
       }
+
+
+
+
+
     } catch {
       case e: Exception =>
         // catch everything else if not specifically handled
@@ -271,6 +285,37 @@ private[spark] class ApplicationMaster(
           "Uncaught exception: " + e)
     }
     exitCode
+  }
+
+
+  //test recovery am from source client
+  def testRecoveryAmFromSourceClient(hostName: String): Unit = {
+    val zkSparkRecoveryCentre =
+      new ZkSparkRecoveryCentre(sparkConf.get("spark.zk.hosts"), sparkConf.get("spark.remote.appname"))
+    zkSparkRecoveryCentre.putRecoveryTask(hostName,System.currentTimeMillis()+"")
+  }
+
+  //test recovey am
+
+  def testRecoveryAmClient(): Unit = {
+
+    /*
+     * test run recovery am
+     */
+    val zkSparkRecoveryClient = new ZkSparkRecoveryClient(sparkConf.get("spark.zk.hosts"), sparkConf.get("spark.remote.appname"))
+
+    val argsKeeper = (ObTrans.BytesToObject(zkSparkRecoveryClient.getData)).asInstanceOf[ClientArgsList]
+    val listArgs = argsKeeper.getUserArgs
+
+    val stringList = new Array[String](listArgs.size())
+
+    for(i <- 0 until listArgs.size()){
+      logInfo(listArgs.get(i))
+      stringList.update(i,listArgs.get(i))
+    }
+
+    //RecoveryAmClient.main(stringList,sparkConf)
+    //SparkSubmit.main()
   }
 
   /**

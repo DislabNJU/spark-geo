@@ -127,9 +127,9 @@ public class LongWorkServer {
         String myElectorClientNum = Long.toString(masterSelectorNum);
         String myElectorClientPath = nodePath+"/"+myElectorClientNum;
         try {
-            zkClient.createEphemeral(myElectorClientPath, ObTrans.ObjectToBytes(this.serverData));
-        } catch (ZkNodeExistsException e) {//节点已存在
-            System.out.println(" ZkNodeExistsException catch !");
+            zkClient.createEphemeral(myElectorClientPath,ObTrans.ObjectToBytes(this.serverData));
+        }catch (ZkNodeExistsException e) {//节点已存在
+            System.out.println("ZkNodeExistsException catch !");
         }
 
         try {

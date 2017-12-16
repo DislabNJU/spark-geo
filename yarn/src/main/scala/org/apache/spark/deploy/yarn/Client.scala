@@ -22,7 +22,7 @@ import java.net.{InetAddress, URI, UnknownHostException}
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util
-import java.util.{Properties, UUID}
+import java.util.{NoSuchElementException, Properties, UUID}
 import java.util.zip.{ZipEntry, ZipOutputStream}
 
 import scala.collection.JavaConverters._
@@ -53,9 +53,10 @@ import org.apache.spark.deploy.yarn.config._
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config._
 import org.apache.spark.launcher.{LauncherBackend, SparkAppHandle, YarnCommandBuilderUtils}
+import org.apache.spark.sparkzk.zkclient.common.{IZkClient, ZkClient}
 import org.apache.spark.sparkzk.zkclient.common.serializer.ObTrans
 import org.apache.spark.sparkzk.zkclient.common.serializer.containerLaunchContext.{ClientArgsList, MyContainerLaunchContext}
-import org.apache.spark.sparkzk.zkclient.{ZkSparkDataClient, ZkSparkRecoveryClient}
+import org.apache.spark.sparkzk.zkclient.{ZkSparkDataClient, ZkSparkRecoveryCentre, ZkSparkRecoveryClient}
 import org.apache.spark.util.Utils
 
 private[spark] class Client(
@@ -194,28 +195,28 @@ private[spark] class Client(
       logInfo(s"Submitting application $appId to ResourceManager")
       yarnClient.submitApplication(appContext)
 
-
-      var userArgs: java.util.List[String] = null
+      //add recovery data to zk
+      /*var userArgs: java.util.List[String] = null
       userArgs  = new java.util.ArrayList[String]()
-
       val tempArgs =  args.userArgs //ArrayBuffer[String]
       for(i <- 0 until tempArgs.length){
         userArgs.add(tempArgs(i))
       }
-
       val argsKeep = new ClientArgsList(userArgs)
-
-
       //val zkHost = "10.0.0.52:2181,10.0.2.15:2181,10.0.2.22:2181"
       val zkSparkRecoveryClient = new ZkSparkRecoveryClient(sparkConf.get("spark.zk.hosts"), groupName)
-
       zkSparkRecoveryClient.putData(ObTrans.ObjectToBytes(argsKeep))
-
+      */
 
       // new sam for all remote yarn
       logInfo(s"new sam for all remote yarn")
 
-      //newRemoteSAM()
+      newRemoteSAM()
+
+      //
+      var recoveryTread = new ThreadRecoveryAm
+      recoveryTread.start()
+
 
 
       appId
@@ -1277,7 +1278,10 @@ private[spark] class Client(
     * throw an appropriate SparkException.
     */
   def run(): Unit = {
+
     this.appId = submitApplication()
+
+
     if (!launcherBackend.isConnected() && fireAndForget) {
       val report = getApplicationReport(appId)
       val state = report.getYarnApplicationState
@@ -1301,6 +1305,84 @@ private[spark] class Client(
       }
     }
   }
+
+
+  class ThreadRecoveryAm extends Thread {
+
+    override def run(){
+      val zkSparkRecoveryCentre = new ZkSparkRecoveryCentre(sparkConf.get("spark.zk.hosts"), groupName)
+
+      while(!zkSparkRecoveryCentre.isProcessDone){
+        if(zkSparkRecoveryCentre.isRecoveryChildExist){
+          var recoveryHosts: util.List[String] = zkSparkRecoveryCentre.getAllRecoveryHost
+          for(hostIp <- recoveryHosts){
+            newRrcoveryAM(hostIp);
+          }
+        }
+        else {
+          Thread.sleep(500)
+        }
+      }
+    }
+
+  }
+  private def newRrcoveryAM(myYarnIp: String): Unit = {
+
+    try {
+      // launcherBackend.connect() //????
+      // Setup the credentials before doing anything else,
+      // so we have don't have issues at any point.
+      // setupCredentials() //????
+
+
+      var appId: ApplicationId = null
+      //import org.apache.spark.deploy.yarn.YarnClientCommon
+
+      val myYarnConf = new YarnConfiguration()
+
+      myYarnConf.set("yarn.resourcemanager.hostname", myYarnIp )
+      myYarnConf.set("yarn.resourcemanager.address", myYarnIp + ":8032")
+      myYarnConf.set("yarn.resourcemanager.scheduler.address", myYarnIp + ":8030")
+
+      val myYarnClient = YarnClient.createYarnClient
+
+      myYarnClient.init(myYarnConf)
+      myYarnClient.start()
+
+
+      logInfo("Requesting a new application from cluster with %d NodeManagers"
+        .format(myYarnClient.getYarnClusterMetrics.getNumNodeManagers))
+
+      // Get a new application from our RM
+      val newApp = myYarnClient.createApplication()
+      val newAppResponse = newApp.getNewApplicationResponse()
+      appId = newAppResponse.getApplicationId()
+      // reportLauncherState(SparkAppHandle.State.SUBMITTED)
+
+      // launcherBackend.setAppId(appId.toString)
+
+      // Verify whether the cluster has enough resources for our AM
+      // verifyClusterResources(newAppResponse)
+
+      // Set up the appropriate contexts to launch our AM
+      //myYarnIp should be the namenode ip
+      val containerContext = createContainerLaunchContext(myYarnIp, myYarnConf, newAppResponse)
+      val appContext = createApplicationSubmissionContext(newApp, containerContext)
+
+      // Finally, submit and monitor the application
+      logInfo(s"Submitting application $appId to ResourceManager")
+      myYarnClient.submitApplication(appContext)
+
+    } catch {
+      case e: Throwable =>
+        if (appId != null) {
+          cleanupStagingDir(appId)
+        }
+        throw e
+    }
+  }
+
+
 
   private def findPySparkArchives(): Seq[String] = {
     sys.env.get("PYSPARK_ARCHIVES_PATH")
@@ -1326,6 +1408,18 @@ private object Client extends Logging {
       logWarning("WARNING: This client is deprecated and will be removed in a " +
         "future version of Spark. Use ./bin/spark-submit with \"--master yarn\"")
     }
+
+    try {
+      //sys.props("SPARK_HOME") = "/home/zxd/spark-2.0.0-bin-2.6.0"
+      val er = sys.env("SPARK_HOME")
+      logInfo("ER: "+er)
+    }catch {
+      case e: NoSuchElementException =>
+        logInfo("no SPARK_HOME")
+    }
+
+
+
 
     // Set an env variable indicating we are running in YARN mode.
     // Note that any env variable with the SPARK_ prefix gets propagated to all (remote) processes

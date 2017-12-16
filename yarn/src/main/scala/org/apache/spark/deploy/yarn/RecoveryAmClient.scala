@@ -21,7 +21,7 @@ import java.io.{ByteArrayInputStream, DataInputStream, File, FileOutputStream, I
 import java.net.{InetAddress, URI, UnknownHostException}
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
-import java.util.{Properties, UUID}
+import java.util.{NoSuchElementException, Properties, UUID}
 import java.util.zip.{ZipEntry, ZipOutputStream}
 
 import scala.collection.JavaConverters._
@@ -48,6 +48,7 @@ import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException
 import org.apache.hadoop.yarn.util.Records
 import org.apache.spark.{SecurityManager, SparkConf, SparkContext, SparkException}
 import org.apache.spark.deploy.SparkHadoopUtil
+import org.apache.spark.deploy.yarn.RecoveryAmClient.{logInfo, logWarning}
 import org.apache.spark.deploy.yarn.config._
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config._
@@ -1206,10 +1207,13 @@ private[spark] class RecoveryAmClient(
   }
 
   private def findPySparkArchives(): Seq[String] = {
+
     sys.env.get("PYSPARK_ARCHIVES_PATH")
       .map(_.split(",").toSeq)
       .getOrElse {
-        val pyLibPath = Seq(sys.env("SPARK_HOME"), "python", "lib").mkString(File.separator)
+        //val pyLibPath = Seq(sys.env("SPARK_HOME"), "python", "lib").mkString(File.separator)
+        val pyLibPath = Seq("/home/zxd/spark-2.0.0-bin-2.6.0", "python", "lib").mkString(File.separator)
+
         val pyArchivesFile = new File(pyLibPath, "pyspark.zip")
         require(pyArchivesFile.exists(),
           s"$pyArchivesFile not found; cannot run pyspark application in YARN mode.")
@@ -1227,6 +1231,38 @@ private object RecoveryAmClient extends Logging {
 
   def main(argStrings: Array[String],
            sparkConf: SparkConf) {
+
+
+    //
+    /*try {
+      sys.props("SPARK_HOME") = "/home/zxd/spark-2.0.0-bin-2.6.0"
+      val er = sys.env("SPARK_HOME")
+      logInfo("er: "+er)
+    }catch{
+      case e: NoSuchElementException =>
+        logWarning("sys.props SPARK_HOME is not ok")
+        try {
+          System.setProperty("SPARK_HOME", "/home/zxd/spark-2.0.0-bin-2.6.0")
+          val er = sys.env("SPARK_HOME")
+          logInfo("er: "+er)
+        }catch{
+          case e: NoSuchElementException =>
+            logWarning("System.setProperty SPARK_HOME is not ok")
+            try {
+              sys.env.updated("SPARK_HOME", "/home/zxd/spark-2.0.0-bin-2.6.0")
+              val er = sys.env("SPARK_HOME")
+              logInfo("er: "+er)
+            }catch{
+              case e: NoSuchElementException =>
+                logWarning("sys.env.updated SPARK_HOME is not ok")
+            }
+        }
+    }*/
+
+
+
+
+
     if (!sys.props.contains("SPARK_SUBMIT")) {
       logWarning("WARNING: This client is deprecated and will be removed in a " +
         "future version of Spark. Use ./bin/spark-submit with \"--master yarn\"")

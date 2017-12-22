@@ -40,7 +40,7 @@ import org.apache.spark.partial.{ApproximateActionListener, ApproximateEvaluator
 import org.apache.spark.rdd.RDD
 import org.apache.spark.rpc.{RpcEndpointAddress, RpcEndpointRef, RpcTimeout}
 import org.apache.spark.scheduler.cluster.CoarseGrainedSchedulerBackend
-import org.apache.spark.sparkzk.zkclient.ZkSparkAmInfoManager
+import org.apache.spark.sparkzk.zkclient.{ZkSparkAmInfoManager, ZkSparkRecoveryCentre}
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
 import org.apache.spark.util._
@@ -297,6 +297,10 @@ class DAGScheduler(
 
   private val groupName = sc.getConf.get("spark.remote.appname")
 
+  private val recoverPartners = new mutable.HashSet[Int]
+
+  protected val recoverLock = new AnyRef
+
   private val driverUrl = RpcEndpointAddress(
     sc.getConf.get("spark.driver.host"),
     sc.getConf.get("spark.driver.port").toInt,
@@ -355,6 +359,8 @@ class DAGScheduler(
               logInfo(s"testNum: ${testMap}")
             }
             */
+            checkRecover()
+
             val newAlivePartners = zkClient.getPartners()
             if (newAlivePartners != alivePartners) {
               val oldAlivePartners = alivePartners
@@ -518,6 +524,7 @@ class DAGScheduler(
         if (fid == id) {
           val selfInfo = new ClusterInfo()
           selfInfo.setClusterId(id)
+          selfInfo.setClusterName(sc.getConf.get("spark.clustername.id" + id.toString))
           selfInfo.setDriverUrl(driverUrl)
           selfInfo.setEndpointRef(endpointRef)
           selfInfo.setAppMasterRole(ApplicationMasterRole.LEADER)
@@ -526,6 +533,7 @@ class DAGScheduler(
         } else {
           val info = new ClusterInfo()
           info.setClusterId(fid)
+          info.setClusterName(sc.getConf.get("spark.clustername.id" + fid.toString))
           info.setAppMasterRole(ApplicationMasterRole.FOLLOWER)
           info.setAppMasterState(ApplicationMasterState.RUNNING)
           partners.put(fid, info)
@@ -1345,7 +1353,10 @@ class DAGScheduler(
     logInfo(s"rddClass: ${sInfo.rdd.getClass}")
     // val rddFromLeader: RDD[T] = sInfo.rdd.asInstanceOf[RDD[T]]
     val rddFromLeader = rdd
-    val partitionsFromLeader = sInfo.partitions
+    var partitionsFromLeader = sInfo.partitions
+    if (sInfo.partners(id).appMasterState != ApplicationMasterState.RUNNING) {
+      partitionsFromLeader = partitions
+    }
     // val jobIdFromLeader = syncInfo.jobId
 
     if (rddFromLeader == null) {
@@ -3120,6 +3131,24 @@ class DAGScheduler(
     }
   }
 
+
+  def checkRecover(): Unit = {
+    recoverLock.synchronized {
+      val rp = recoverPartners.clone()
+      val ps = zkClient.getStageInfo()
+      rp.foreach { pid =>
+        if (ps(pid)._1 >= ps(id)._1) {
+          syncInfoLock.synchronized {
+            logInfo(s"partner ${pid} recover done")
+            syncInfo.setFollowerState(pid, ApplicationMasterState.RUNNING)
+            zkClient.updateSyncInfo(syncInfo)
+            recoverPartners -= pid
+          }
+        }
+      }
+    }
+  }
+
   def handlePartnersRecover(pids: HashSet[Int]): Unit = {
     logInfo(s"handlePartnersRecover")
     val checkRecover = new Runnable() {
@@ -3139,6 +3168,7 @@ class DAGScheduler(
                 syncInfoLock.synchronized {
                   logInfo(s"partner ${pid} recover done")
                   syncInfo.setFollowerState(pid, ApplicationMasterState.RUNNING)
+                  zkClient.updateSyncInfo(syncInfo)
                   pids -= pid
                 }
               }
@@ -3152,7 +3182,10 @@ class DAGScheduler(
         }
       }
     }
-    checkRecover.run()
+    // checkRecover.run()
+    recoverLock.synchronized {
+      recoverPartners ++= pids
+    }
   }
 
   // called when partner(s) fail in Leader AM
@@ -3241,9 +3274,18 @@ class DAGScheduler(
           syncInfo.addPartition(stageId, id, sp)
       }
       pids.foreach {pid =>
-      syncInfo.partners(pid).clearSubPartitions()}
+      syncInfo.partners(pid).clearSubPartitions()
+      resubmitPartnerApplication(pid, syncInfo.partners(pid).clusterName)
+      }
       zkClient.updateSyncInfo(syncInfo)
     }
+  }
+
+  def resubmitPartnerApplication(pid: Int, clusterName: String): Unit = {
+    logInfo(s"resubmitPartner $pid to cluster $clusterName")
+    val zkSparkRecoveryCentre =
+      new ZkSparkRecoveryCentre(sc.getConf.get("spark.zk.hosts"), groupName)
+    zkSparkRecoveryCentre.putRecoveryTask(clusterName, System.currentTimeMillis() + "")
   }
 
   // (leaderId, leaderEndPoint)

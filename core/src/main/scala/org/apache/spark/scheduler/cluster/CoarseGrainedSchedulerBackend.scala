@@ -500,7 +500,8 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       override def run(): Unit = {
         try {
           logInfo(s"sendToFollower $fid in thread")
-          success = endpoint.ask[Boolean](events)
+          // success = endpoint.ask[Boolean](events)
+          endpoint.send(events)
         }
       }
     }
@@ -529,11 +530,11 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         val success = sendToFollower(fid, followerIdToEndpoint(fid),
           RemoteCompletionEventsFromLeader(epoch, eventsToSend, allEventsIds))
 
-        while (!success.isCompleted) {
+        while (false /* || !success.isCompleted */) {
           logInfo(s"$fid send not complete yet")
           Thread.sleep(500)
         }
-        logInfo(s"$fid send result: $success")
+        // logInfo(s"$fid send result: $success")
 
         // sendToFollower(fid, followerIdToEndpoint(fid),
         //   RemoteCompletionEventsFromLeader(epoch, eventsToSend, allEventsIds))

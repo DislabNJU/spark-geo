@@ -29,7 +29,7 @@ import scala.collection.mutable
  */
 class ClusterInfo (
     var clusterId: Int,
-    // var rmHost: String,
+    var clusterName: String,
     var driverUrl: String,
     var endpoint: RpcEndpointRef,
     var appMasterRole: ApplicationMasterRole,
@@ -37,7 +37,8 @@ class ClusterInfo (
     var subPartitions: mutable.HashMap[Int, Seq[Int]],
     var subTasks: mutable.HashMap[Int, Seq[Task[_]]]) extends Serializable {
 
-  def this() = this(-1, "unset", null, null, null, mutable.HashMap.empty, mutable.HashMap.empty)
+  def this() = this(-1, "unset", "unset", null, null, null,
+    mutable.HashMap.empty, mutable.HashMap.empty)
 
   def setClusterId(id: Int): Unit = {
     clusterId = id
@@ -47,11 +48,11 @@ class ClusterInfo (
     driverUrl = url
   }
 
-  /*
-  def setRMHost(host: String): Unit = {
-    rmHost = host
-  }
 
+  def setClusterName(host: String): Unit = {
+    clusterName = host
+  }
+/*
   def setNameNodeHost(host: String): Unit = {
     nameNodeHost = host
   }

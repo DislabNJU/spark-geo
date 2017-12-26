@@ -27,18 +27,20 @@ import scala.collection.mutable
 /**
  * Created by lxb on 17-11-20.
  */
-class ClusterInfo (
-    var clusterId: Int,
-    var clusterName: String,
-    var driverUrl: String,
-    var endpoint: RpcEndpointRef,
-    var appMasterRole: ApplicationMasterRole,
-    var appMasterState: ApplicationMasterState,
-    var subPartitions: mutable.HashMap[Int, Seq[Int]],
-    var subTasks: mutable.HashMap[Int, Seq[Task[_]]]) extends Serializable {
+class ClusterInfo () extends Serializable {
 
-  def this() = this(-1, "unset", "unset", null, null, null,
-    mutable.HashMap.empty, mutable.HashMap.empty)
+  var clusterId: Int = -1
+  var clusterName: String = "unset"
+  var driverUrl: String = "unset"
+  var endpoint: RpcEndpointRef = null
+  var appMasterRole: ApplicationMasterRole = null
+  var appMasterState: ApplicationMasterState = null
+  var subPartitions: mutable.HashMap[Int, Seq[Int]] = mutable.HashMap.empty
+  // var subTasks: mutable.HashMap[Int, Seq[Task[_]]]
+  var nodes: mutable.HashSet[String] = mutable.HashSet.empty
+
+  // def this() = this(-1, "unset", "unset", null, null, null,
+  //   mutable.HashMap.empty, mutable.HashMap.empty)
 
   def setClusterId(id: Int): Unit = {
     clusterId = id
@@ -78,8 +80,14 @@ class ClusterInfo (
     subPartitions = subPartitions.map {case (sid, subp) => (sid, Seq.empty)}
   }
 
+  /*
   def setSubtasks(stageId: Int, t: Seq[Task[_]]): Unit = {
     subTasks(stageId) = t
+  }
+  */
+
+  def setNodes(n: mutable.HashSet[String]): Unit = {
+    nodes = n
   }
 
 }

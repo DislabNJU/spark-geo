@@ -499,7 +499,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     val sendEvents = new Runnable() {
       override def run(): Unit = {
         try {
-          logInfo(s"sendToFollower $fid in thread")
+          // logInfo(s"sendToFollower $fid in thread")
           // success = endpoint.ask[Boolean](events)
           endpoint.send(events)
         }

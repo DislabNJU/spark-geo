@@ -11,7 +11,7 @@ public class ZkSparkLongElectorClient {
     private LongWorkServer workServer;
     private RunningData runningData;
     private int session_time_mil = 2000;
-    private int connectTimeOutMil = 2000;
+    private int connectTimeOutMil = 3000;
     public ZkSparkLongElectorClient(String zkHostName, String appNodeName, String clientId, Long masterSelectNum){
         this.myClientId = clientId;
         zkClient = new ZkClient(zkHostName, session_time_mil, connectTimeOutMil);

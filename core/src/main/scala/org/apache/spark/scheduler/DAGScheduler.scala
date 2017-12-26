@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.annotation.tailrec
-import scala.collection.{Map, mutable}
+import scala.collection.{JavaConversions, Map, mutable}
 import scala.collection.mutable.{HashMap, HashSet, Stack}
 import scala.concurrent.duration._
 import scala.language.existentials
@@ -45,6 +45,9 @@ import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
 import org.apache.spark.util._
 import org.eclipse.jetty.io.EndPoint
+
+import scala.io.Source
+import scala.xml.XML
 
 /**
  * The high-level scheduling layer that implements stage-oriented scheduling. It computes a DAG of
@@ -291,7 +294,8 @@ class DAGScheduler(
 
   // private val completionEventHandled = new HashSet[CompletionEvent]
 
-  private val taskDistributor = new TaskDistributor()
+  private val taskDistributor =
+    new TaskDistributor(sc.getConf.get("spark.remote.taskDistributeMode", "random"))
 
   private val partnerNum = sc.getConf.getInt("spark.remote.allamnum", 1)
 
@@ -311,28 +315,6 @@ class DAGScheduler(
 
   protected val originalsLock = new AnyRef
 
-  private var testNum = 1
-  private val testLock = AnyRef
-
-  private val testMap = new mutable.HashMap[Long, mutable.HashSet[Int]]
-  testMap.getOrElseUpdate(1, new mutable.HashSet[Int]) += 1
-  logInfo(s"testNum: ${testMap}")
-  testLock.synchronized {
-    val tm = testMap.getOrElseUpdate(1, new mutable.HashSet[Int])
-    tm += 2
-    logInfo(s"testNum: ${testMap}")
-    testLock.synchronized {
-      testMap.getOrElseUpdate(1, new mutable.HashSet[Int]) += 3
-      logInfo(s"testNum: ${testMap}")
-    }
-    logInfo(s"testNum clone: ${testMap.clone()}")
-  }
-
-  private val testSet = new HashSet[Int]
-  testSet += 1
-  var testSetCopy = testSet
-  testSetCopy += 2
-  logInfo(s"testSet: $testSet")
 
   logInfo("DAGScheduler started")
 
@@ -520,11 +502,28 @@ class DAGScheduler(
         registeredPartners = zkClient.getPartners()
       }
       logInfo(s"all registered partners: ${registeredPartners.toString()}")
+
+      val nodesOfClusters = XML.load("__spark_conf__/clustersInfo.xml")
+      val nodesMap = (HashMap[Int, (String, mutable.HashSet[String])]()
+        /: (nodesOfClusters \ "cluster")) {
+        (map, cluster) =>
+          val id = (cluster \ "@id").toString.toInt
+          val master = (cluster \ "master").text.toString
+          val slaves = (cluster \ "slaves").text.toString
+          val nodesSet = slaves.split(",")
+          val scalaSet: mutable.HashSet[String] = mutable.HashSet(nodesSet: _*)
+          scalaSet += master
+          map(id) = (master, scalaSet)
+          map
+      }
+      logInfo(s"clusterNodes: $nodesMap")
       registeredPartners.foreach { fid =>
         if (fid == id) {
           val selfInfo = new ClusterInfo()
           selfInfo.setClusterId(id)
-          selfInfo.setClusterName(sc.getConf.get("spark.clustername.id" + id.toString))
+          // selfInfo.setClusterName(sc.getConf.get("spark.clustername.id" + id.toString))
+          selfInfo.setClusterName(nodesMap(fid)._1)
+          selfInfo.setNodes(nodesMap(fid)._2)
           selfInfo.setDriverUrl(driverUrl)
           selfInfo.setEndpointRef(endpointRef)
           selfInfo.setAppMasterRole(ApplicationMasterRole.LEADER)
@@ -533,7 +532,9 @@ class DAGScheduler(
         } else {
           val info = new ClusterInfo()
           info.setClusterId(fid)
-          info.setClusterName(sc.getConf.get("spark.clustername.id" + fid.toString))
+          // info.setClusterName(sc.getConf.get("spark.clustername.id" + fid.toString))
+          info.setClusterName(nodesMap(fid)._1)
+          info.setNodes(nodesMap(fid)._2)
           info.setAppMasterRole(ApplicationMasterRole.FOLLOWER)
           info.setAppMasterState(ApplicationMasterState.RUNNING)
           partners.put(fid, info)
@@ -817,7 +818,8 @@ class DAGScheduler(
         }
       }
       if (!askResponse.isEmpty) {
-        logInfo(s"response to follower ${fid}: ${askResponse.map(e => e.task.partitionId)}")
+        logInfo(s"response to follower ${fid}: ${askResponse.map(e =>
+          (e.task.stageId, e.task.partitionId))}")
       }
       eventsToSend.put(fid, followerEventsSet.diff(es) ++ localEvents ++ askResponse)
     }
@@ -836,7 +838,8 @@ class DAGScheduler(
             }
           }
           if (!askResponse.isEmpty) {
-            logInfo(s"response to follower ${pid}: ${askResponse.map(e => e.task.partitionId)}")
+            logInfo(s"response to follower ${pid}: ${askResponse.map(e =>
+              (e.task.stageId, e.task.partitionId))}")
           }
           eventsToSend.put(pid, allEventsThisEpoch ++ askResponse)
         }
@@ -2042,37 +2045,11 @@ class DAGScheduler(
     val partitionsToCompute: Seq[Int] = stage.findMissingPartitions()
     logInfo(s"allPartitions: ${partitionsToCompute}")
 
-    runningStages += stage
-
-    var partners: HashMap[Int, ClusterInfo] = HashMap.empty
-    syncInfoLock.synchronized {
-      if (!getSyncInfo().partners(id).subPartitions.isDefinedAt(stage.id)) {
-        partners = taskDistributor.distributeTask(stage.id, partitionsToCompute,
-          syncInfo.partners)
-        syncInfo.setPartners(partners)
-        syncInfo.setSubPartFlag(jobId, stage.id)
-        // syncInfo.setOriginals(AccumulatorContext.getRegisterSet())
-        zkClient.updateSyncInfo(syncInfo)
-      } else {
-        partners = syncInfo.partners
-      }
-    }
-
-
-    /*
-    logInfo("distribute tasks")
-    partners.foreach { case(pid, info) =>
-      logInfo(s"partner ${pid} handle tasks ${info.subPartitions(stage.id).toString()}")
-    }
-    */
-
-    val partitionsComputeLocal = partners(id).subPartitions(stage.id)
-
     // Use the scheduling pool, job group, description, etc. from an ActiveJob associated
     // with this Stage
     val properties = jobIdToActiveJob(jobId).properties
 
-
+    runningStages += stage
     // SparkListenerStageSubmitted should be posted before testing whether tasks are
     // serializable. If tasks are not serializable, a SparkListenerStageCompleted event
     // will be posted, which should always come after a corresponding SparkListenerStageSubmitted
@@ -2087,10 +2064,10 @@ class DAGScheduler(
     val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
       stage match {
         case s: ShuffleMapStage =>
-          partitionsComputeLocal.map { id => (id, getPreferredLocs(stage.rdd, id))}.toMap
+          partitionsToCompute.map { id => (id, getPreferredLocs(stage.rdd, id))}.toMap
         case s: ResultStage =>
           val job = s.activeJob.get
-          partitionsComputeLocal.map { id =>
+          partitionsToCompute.map { id =>
             val p = s.partitions(id)
             (id, getPreferredLocs(stage.rdd, p))
           }.toMap
@@ -2104,7 +2081,24 @@ class DAGScheduler(
         return
     }
 
-    stage.makeNewStageAttempt(partitionsToCompute.size, taskIdToLocations.values.toSeq)
+    var partners: HashMap[Int, ClusterInfo] = HashMap.empty
+    syncInfoLock.synchronized {
+      if (!getSyncInfo().partners(id).subPartitions.isDefinedAt(stage.id)) {
+        partners = taskDistributor.distributeTask(stage.id, partitionsToCompute,
+          taskIdToLocations, syncInfo.partners)
+        syncInfo.setPartners(partners)
+        syncInfo.setSubPartFlag(jobId, stage.id)
+        // syncInfo.setOriginals(AccumulatorContext.getRegisterSet())
+        zkClient.updateSyncInfo(syncInfo)
+      } else {
+        partners = syncInfo.partners
+      }
+    }
+    val partitionsComputeLocal = partners(id).subPartitions(stage.id)
+    val taskIdToLocationsLocal = partitionsComputeLocal.map {id =>
+      (id, taskIdToLocations(id))}.toMap
+
+    stage.makeNewStageAttempt(partitionsToCompute.size, taskIdToLocationsLocal.values.toSeq)
     listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
 
     var taskBinary: Broadcast[Array[Byte]] = null
@@ -2816,7 +2810,7 @@ class DAGScheduler(
       case Success =>
         addEventsFromLocal(event)
         checkLeader()
-        logInfo(s"TaskCompletionFromLocal, isLeader: ${isLeader}")
+        // logInfo(s"TaskCompletionFromLocal, isLeader: ${isLeader}")
         if (!isLeader) {
           addEventToSendOnFollower(event)
         }

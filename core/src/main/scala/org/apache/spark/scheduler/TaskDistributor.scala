@@ -19,18 +19,32 @@ package org.apache.spark.scheduler
 
 import org.apache.spark.internal.Logging
 
-import scala.collection.Map
+import scala.collection.{Map, mutable}
 import scala.collection.mutable.HashMap
 import scala.util.Random
 
 /**
  * Created by lxb on 17-11-21.
  */
-class TaskDistributor  extends Logging{
-  private val distributeMode = DistributeMode.RANDOM
+class TaskDistributor(mode: String)  extends Logging{
+
+  private val distributeMode = mode match {
+    case "random" =>
+      logInfo("TaskDistribute mode: random")
+      DistributeMode.RANDOM
+
+    case "locality" =>
+      logInfo("TaskDistribute mode: locality")
+      DistributeMode.LOCALITY
+
+    case _ =>
+      logInfo("unknown TaskDistribute mode")
+      DistributeMode.RANDOM
+  }
 
   def distributeTask(stageId: Int,
       partitionsToCompute: Seq[Int],
+      taskIdToLocations: Map[Int, Seq[TaskLocation]],
       partners: HashMap[Int, ClusterInfo]): HashMap[Int, ClusterInfo] = {
     val alivePartners = partners.filter{ case(pid, info) =>
         info.appMasterState == ApplicationMasterState.RUNNING
@@ -49,7 +63,7 @@ class TaskDistributor  extends Logging{
       partnersId((new Random).nextInt(partnersId.length))
     }
     */
-    val subPartitions = applyDistributeMode(partitionsToCompute, alivePartners)
+    val subPartitions = applyDistributeMode(partitionsToCompute, taskIdToLocations, alivePartners)
 
     alivePartners.foreach{ case (pid, cInfo) =>
       if (subPartitions.isDefinedAt(pid)) {
@@ -61,7 +75,7 @@ class TaskDistributor  extends Logging{
         }
         */
         partners.update(pid, cInfo)
-        logInfo(s"partner ${pid} got partitions: ${subPartitions(pid).toString()}")
+        logInfo(s"partner ${pid} got partitions: ${subPartitions(pid).sorted.toString()}")
       } else {
         cInfo.setSubPartitions(stageId, Seq.empty)
         // cInfo.setSubtasks(stageId, Seq.empty)
@@ -83,10 +97,13 @@ class TaskDistributor  extends Logging{
   }
 
   private def applyDistributeMode(partitionsToCompute: Seq[Int],
+                                  taskIdToLocations: Map[Int, Seq[TaskLocation]],
                                   alivePartners: HashMap[Int, ClusterInfo]): Map[Int, Seq[Int]] = {
     distributeMode match {
       case DistributeMode.RANDOM =>
         randomMode(partitionsToCompute, alivePartners)
+      case DistributeMode.LOCALITY =>
+        localityMode(partitionsToCompute, taskIdToLocations, alivePartners)
     }
 
   }
@@ -98,6 +115,41 @@ class TaskDistributor  extends Logging{
     partitionsToCompute.groupBy{ p =>
       partnersId((new Random).nextInt(partnersId.length))
     }
+  }
+
+  private def localityMode(partitionsToCompute: Seq[Int],
+                           taskIdToLocations: Map[Int, Seq[TaskLocation]],
+                           alivePartners: HashMap[Int, ClusterInfo]): Map[Int, Seq[Int]] = {
+    logInfo("distribute by locality")
+    var randomAssign = 0
+    val result = new HashMap[Int, mutable.HashSet[Int]]
+    val partnersId = alivePartners.keySet.toArray
+    val nodeToClusterId = new mutable.HashMap[String, Int]
+    alivePartners.foreach {case(pid, info) =>
+      info.nodes.foreach {node => nodeToClusterId(node) = pid}
+    }
+    partitionsToCompute.map{ p =>
+      var assignToCluster = -1
+      val locations = taskIdToLocations(p)
+      if (locations == Nil) {
+        assignToCluster = partnersId((new Random).nextInt(partnersId.length))
+        randomAssign += 1
+      } else {
+        val vote = partnersId.map {pid => (pid, 0)}.toMap
+        locations.foreach {l =>
+          val cid = if (nodeToClusterId.isDefinedAt(l.host)) {
+            nodeToClusterId(l.host)
+          } else {
+            partnersId((new Random).nextInt(partnersId.length))
+          }
+          vote.updated(cid, vote(cid) + 1)
+        }
+        assignToCluster = vote.maxBy(_._2)._1
+      }
+      result.getOrElseUpdate(assignToCluster, new mutable.HashSet[Int]()) += p
+    }
+    logInfo(s"assign ${partitionsToCompute.size} tasks, $randomAssign tasks have not data locality")
+    result.map {case(cid, partitionsSet) => (cid, partitionsSet.toSeq)}
   }
 
 }

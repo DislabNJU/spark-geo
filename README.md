@@ -12,4 +12,5 @@ The cost reduction comes from two sources: WAN cost and machine cost. The WAN co
 <img width="400" src="https://github.com/DislabNJU/Houtu/blob/branch-0.2/job-log-topo.PNG"/>
 
 How Houtu works?
-===
+=== 
+Two main steps in a job's execution is step 4 and step 6 in the first figure, which corresponds to 

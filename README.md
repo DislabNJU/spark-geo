@@ -8,6 +8,6 @@ Houtu is a geo-distributed analytics system, which is developed with Spark, YARN
 Because data is naturally generated at geo-distributed data centers, anaytics jobs on these data are emerging as a daily requirement. Naive extension of cluster-scale analytics systems to the scale of geo-distributed data centers fails to meet upcoming regulatory constraints, which prevent a master machine from controlling worker machines from remote data centers. An alternative is to deploy an autonomous data analytics system per data center, and extend the functionalities of original system to allow to coordinate for geo distributed jobs, as shown in the above figure.
 ### Why reduced monetary cost?
 
-<img width="650" src="https://github.com/DislabNJU/Houtu/blob/branch-0.2/job-log-topo.PNG"/>
+<img width="400" src="https://github.com/DislabNJU/Houtu/blob/branch-0.2/job-log-topo.PNG"/>
 How Houtu works?
 ===

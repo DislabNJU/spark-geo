@@ -9,5 +9,6 @@ Because data is naturally generated at geo-distributed data centers, anaytics jo
 ### Why reduced monetary cost?
 
 <img width="400" src="https://github.com/DislabNJU/Houtu/blob/branch-0.2/job-log-topo.PNG"/>
+
 How Houtu works?
 ===

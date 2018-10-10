@@ -6,6 +6,7 @@ Houtu is a geo-distributed analytics system, which is developed with Spark, YARN
 <img width="650" src="https://github.com/DislabNJU/Houtu/blob/branch-0.2/aa.PNG"/>
 ### Why decentralized architechure?
 
+### Why reduced monetary cost?
 
 How Houtu works?
 ===

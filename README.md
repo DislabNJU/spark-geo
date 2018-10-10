@@ -7,7 +7,7 @@ Houtu is a geo-distributed analytics system, which is developed with Spark, YARN
 ### Why decentralized architechure?
 Because data is naturally generated at geo-distributed data centers, anaytics jobs on these data are emerging as a daily requirement. Naive extension of cluster-scale analytics systems to the scale of geo-distributed data centers fails to meet upcoming regulatory constraints, which prevent a master machine from controlling worker machines from remote data centers. An alternative is to deploy an autonomous data analytics system per data center, and extend the functionalities of original system to allow to coordinate for geo distributed jobs, as shown in the above figure.
 ### Why reduced monetary cost?
-The cost reduction comes from two sources: WAN cost and machine cost. The WAN cost reduction is due to the task scheduling algorithm, which is sketched in next section. The machine cost reduction is due to the usage of Spot instances. 
+The cost reduction comes from two sources: WAN cost and machine cost. The WAN cost reduction is due to the task scheduling algorithm, which is sketched in next section. The machine cost reduction is due to the usage of Spot instances. The Spot instances have significantly lower price than the On-demand instances, but lose the reliability guarantees. 
 <img width="400" src="https://github.com/DislabNJU/Houtu/blob/branch-0.2/job-log-topo.PNG"/>
 
 How Houtu works?

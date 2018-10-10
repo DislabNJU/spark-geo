@@ -13,4 +13,4 @@ The cost reduction comes from two sources: WAN cost and machine cost. The WAN co
 
 How Houtu works?
 === 
-Two main steps in a job's execution is step 4 and step 6 in the first figure, which corresponds to 
+Two main steps in a job's execution is step 4 and step 6 in the first figure, which corresponds to managing resources for a job and task assignment in a job. 

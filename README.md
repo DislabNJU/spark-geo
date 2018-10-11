@@ -16,6 +16,6 @@ How Houtu works?
 Two main steps in a job's execution is step 4 and step 6 in the first figure, which corresponds to managing resources for a job and task scheduling in a job. 
 
 ### Resource management
-<i>independently</i>
+For each job, there is a job manager (namely AM, or Driver) in each data center. These job managers <i>independently</i> manage their resources in their local data center. Here, three cases are classified where a job manager may request more resources from its local master, or maintain its current resources, or release some of it resources. The decision is made according to 
 
 ### Task scheduling

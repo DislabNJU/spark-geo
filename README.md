@@ -16,6 +16,6 @@ How Houtu works?
 Two main steps in a job's execution is step 4 and step 6 in the first figure, which corresponds to managing resources for a job and task scheduling in a job. 
 
 ### Resource management
-<i>indenpendently</i>
+<i>independently</i>
 
 ### Task scheduling

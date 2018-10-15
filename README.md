@@ -13,7 +13,7 @@ The cost reduction comes from two sources: WAN cost and machine cost. The WAN co
 
 How Houtu works?
 === 
-Two main steps in a job's execution is step 4 and step 6 in the first figure, which corresponds to managing resources for a job and task scheduling in a job. 
+Two main steps in a job's execution are step 4 and step 6 in the first figure, which corresponds to managing resources for a job and task scheduling in a job. 
 
 ### Resource management
 For each job, there is a job manager (namely AM, or Driver) in each data center. These job managers <i>independently</i> manage their resources in their local data center. Here, three cases are classified where a job manager may request more resources from its local master, or maintain its current resources, or release some of it resources. The decision is made according to current resource usage, as well as the presence of waiting tasks. The primary code of our changes is in [this](https://github.com/DislabNJU/Spark/blob/branch-2.0/core/src/main/scala/org/apache/spark/ExecutorAllocationManager.scala).
